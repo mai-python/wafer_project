@@ -285,8 +285,8 @@ def main():
         elif key == ord('w'):
             show_limit_box = not show_limit_box
         elif key == ord('u'):
-            return_to_origin()
-            log("[Manual] Returned to origin")
+            return_to_home_dxdy()
+            log("[Manual] Returned to absoule HOME_DXDY")
         continue
 
     cap.release()
