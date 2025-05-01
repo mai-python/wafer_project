@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Wafer Vision Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="header">Wafer Vision Dashboard</div>
+
+    <div class="panel">
+        <h2>Wafer Type: <span id="wafer_type">(none)</span></h2>
+        <p>Remain X: <span id="dx">0.00</span> cm, Remain Y: <span id="dy">0.00</span> cm</p>
+        <p>Estimated Time: <span id="eta">0.00</span> sec</p>
+    </div>
+
+    <div class="panel">
+        <img src="{{ url_for('video_feed') }}" alt="Video Stream" class="video-feed">
+    </div>
+
+    <div class="panel">
+        <h2>System Status</h2>
+        <p>Current: <span id="current_status" class="badge standby">Standby</span></p>
+        <p>Recognition: <span id="recognition_status" class="badge waiting">Waiting</span></p>
+        <p>Motor: <span id="motor_status" class="badge standby">Standby</span></p>
+        <p>Error: <span id="error_status" class="badge none">none</span></p>
+    </div>
+
+    <div class="control-buttons">
+        <button onclick="sendCommand('start')">Operate</button>
+        <button onclick="sendCommand('pause')">Pause</button>
+        <button onclick="sendCommand('reset')">Reset</button>
+    </div>
+
+    <div class="log-panel" id="log_panel"></div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
