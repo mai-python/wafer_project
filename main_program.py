@@ -12,6 +12,8 @@ FRAME_HEIGHT = 720  # 영상 프레임 세로 크기
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]  # 기준점: 화면 중앙부터 시작 (마우스로 수정 가능)
 TRACK_CONFIRM_TIME = 2.0  # 객체 중심이 일정 시간 유지되어야 확정됨 (초 단위)
 
+HOME_DXDY = (100, 100)
+
 PIXEL_TO_MM_X = 0.6     # X축 픽셀당 mm 변환 비율
 PIXEL_TO_MM_Y = 0.83    # Y축 픽셀당 mm 변환 비율
 STEPS_PER_MM = 1600     # 스텝모터가 1mm 이동하는 데 필요한 스텝 수
@@ -187,6 +189,16 @@ def return_to_origin():
     move_stage(dx_home, dy_home)
     log("[Return] 원위치로 이동 완료.")
 
+def return_to_home_dxdy():
+    global confirmed_center
+    if confirmed_center is None:
+        log("[HOME] 현재 위치 정보 없음, 이동 생략.")
+        return
+    dx = HOME_DXDY[0] - confirmed_center[0]
+    dy = HOME_DXDY[1] - confirmed_center[1]
+    move_stage(dx,dy)
+    log(f"[HOME] 원위치 {HOME_DXDY}로 원위치 완료.")
+
 # ========================== 메인 루프 ==========================
 
 def main():
@@ -272,6 +284,10 @@ def main():
             log_buffer.clear()
         elif key == ord('w'):
             show_limit_box = not show_limit_box
+        elif key == ord('u'):
+            return_to_origin()
+            log("[Manual] Returned to origin")
+        continue
 
     cap.release()
     cv2.destroyAllWindows()
