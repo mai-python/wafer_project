@@ -35,11 +35,11 @@ setInterval(() => {
         .then(data => {
             const panel = document.getElementById("log_panel");
             panel.innerHTML = "";
-            data.logs.slice(-10).forEach(line => {{
+            data.logs.slice(-10).forEach(line => {
                 const p = document.createElement("p");
                 p.innerText = line;
                 panel.appendChild(p);
-            }});
+            });
         });
 }, 2000);
 
@@ -51,3 +51,4 @@ function updateBadge(id, state) {
     const el = document.getElementById(id);
     el.className = "badge " + state;
 }
+
