@@ -1,284 +1,306 @@
+import sys
 import cv2
 import numpy as np
-import time
-import serial
+import asyncio
+import serial_asyncio
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt, QTimer
 from ultralytics import YOLO
-import threading
+from qasync import QEventLoop
+import os
 
-# ========================== 설정값 ==========================
+os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "0"
+
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
-TRACK_CONFIRM_TIME = 1.0
-
-HOME_DXDY = (300, 100)
-
+TOLERANCE_PX = 1
 PIXEL_TO_MM_X = 0.6
 PIXEL_TO_MM_Y = 0.83
 STEPS_PER_MM = 55
-TOLERANCE_PX = 5
 MAX_STEPS = 32000
-MAX_ALIGNMENT_ATTEMPTS = 5  # 오차 범위 도달 시까지 최대 반복 횟수
-
+BAUDRATE = 9600
 SERIAL_PORT = "/dev/ttyACM1"
 CAMERA_INDEX = 0
-BAUDRATE = 9600
+HOME_DXDY = (500, 300)
 
-X_RANGE = (-1000, 1000)
-Y_RANGE = (-600, 600)
-HOME_OFFSET = (0, 0)
-
-MARGIN = 100
+YELLOW_LOWER = (15, 100, 100)
+YELLOW_UPPER = (40, 255, 255)
 AREA_THRESHOLD = 1000
-YELLOW_LOWER = (20, 100, 100)
-YELLOW_UPPER = (30, 255, 255)
-
-# ========================== 상태 변수 ==========================
-log_buffer = []
-last_detected = None
-confirm_start_time = None
-confirmed_center = None
-already_moved = False
-tracking_stopped = False
-show_limit_box = False
-
-dx = dy = 0
-dix = diy = 0
-dx_steps = dy_steps = 0
-command = ""
+ROUNDNESS_THRESHOLD = 0.4
 
 model = YOLO("yolov8n.pt")
 
-def is_near_edge(cx, cy, margin=MARGIN):
-    return cx < margin or cx > FRAME_WIDTH - margin or cy < margin or cy > FRAME_HEIGHT - margin
+confirmed_center = None
+send_enabled = False
+sending_command = False
+awaiting_done = False
+home_mode = False
+stable_count = 0
+STABLE_REQUIRED = 3
+last_sent_command = ""
+setting_target_mode = False
+force_send = False
 
-def compute_center(cnt):
-    if len(cnt) >= 5:
-        ellipse = cv2.fitEllipse(cnt)
-        return (int(ellipse[0][0]), int(ellipse[0][1]))
-    else:
-        (x, y), _ = cv2.minEnclosingCircle(cnt)
-        return (int(x), int(y))
+def log(msg):
+    print(msg)
 
-def detect_opencv_priority_center(frame):
+def compute_roundness(cnt):
+    area = cv2.contourArea(cnt)
+    perimeter = cv2.arcLength(cnt, True)
+    if perimeter == 0:
+        return 0
+    return 4 * np.pi * area / (perimeter * perimeter)
+
+def detect_best_yellow_circle(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
+    mask = cv2.GaussianBlur(mask, (7, 7), 2)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    edge_center = None
-    normal_center = None
-
+    best = None
+    best_score = 0
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area < AREA_THRESHOLD:
             continue
-        cx, cy = compute_center(cnt)
-        if is_near_edge(cx, cy):
-            edge_center = (cx, cy)
-            break
-        elif not normal_center:
-            normal_center = (cx, cy)
-
-    return edge_center if edge_center else normal_center
-
-def log(msg):
-    if len(log_buffer) == 0 or log_buffer[-1] != msg:
-        print(msg)
-        log_buffer.append(msg)
-        if len(log_buffer) > 15:
-            log_buffer.pop(0)
-
-def draw_limit_box(frame):
-    x1 = Target_Point[0] + X_RANGE[0]
-    y1 = FRAME_HEIGHT - (Target_Point[1] + Y_RANGE[1])
-    x2 = Target_Point[0] + X_RANGE[1]
-    y2 = FRAME_HEIGHT - (Target_Point[1] + Y_RANGE[0])
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-
-def mouse_callback(event, x, y, flags, param):
-    if event == cv2.EVENT_LBUTTONDOWN:
-        tx = x
-        ty = FRAME_HEIGHT - y
-        dx_check = tx - Target_Point[0]
-        dy_check = ty - Target_Point[1]
-        if X_RANGE[0] <= dx_check <= X_RANGE[1] and Y_RANGE[0] <= dy_check <= Y_RANGE[1]:
-            Target_Point[0] = tx
-            Target_Point[1] = ty
-            log(f"[CLICK] Target_Point set to ({tx}, {ty})")
-        else:
-            log("[DENIED] 클릭 범위 초과. 무시됨.")
-
-def show_log_window():
-    log_img = np.ones((400, 700, 3), np.uint8) * 30
-    y = 25
-    cv2.putText(log_img, f"Target_Point:      {tuple(Target_Point)}", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1); y += 22
-    cv2.putText(log_img, f"last_detected:     {last_detected if last_detected else '(None)'}", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1); y += 22
-    cv2.putText(log_img, f"confirmed_center:  {confirmed_center if confirmed_center else '(None)'}", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1); y += 22
-    if confirmed_center:
-        cv2.putText(log_img, f"dx = {dx}, dy = {-dy}", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1); y += 22
-        cv2.putText(log_img, f"Xdir={dix} Ydir={diy} Xstep={dx_steps} Ystep={dy_steps}", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1); y += 22
-        cv2.putText(log_img, f"Serial Command: {command}", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1); y += 30
-    else:
-        y += 66
-    for line in log_buffer[-10:]:
-        cv2.putText(log_img, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
-        y += 20
-    cv2.imshow("Log Window", log_img)
-
-def move_stage(dx_pix, dy_pix):
-    if dx_pix == 0 and dy_pix == 0:
-        log("[SKIP] move_stage called with (0, 0) → Skipping motor move.")
-        return
-
-    global dx, dy, dix, diy, dx_steps, dy_steps, command
-    dx = dx_pix
-    dy = dy_pix
-    dix = 1 if dx <= 0 else 0
-    diy = 1 if dy <= 0 else 0
-    dx_mm = abs(dx) * PIXEL_TO_MM_X
-    dy_mm = abs(dy) * PIXEL_TO_MM_Y
-    dx_steps = min(int(dx_mm * STEPS_PER_MM), MAX_STEPS)
-    dy_steps = min(int(dy_mm * STEPS_PER_MM), MAX_STEPS)
-    command = f"{dix},{diy},{dx_steps},{dy_steps}"
-    log(f"[DEBUG] dx_steps = {dx_steps}, dy_steps = {dy_steps}")
-
-    try:
-        with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=3) as ser:
-            time.sleep(2)
-            ser.flushInput()
-            ser.write((command + "\n").encode())
-            time.sleep(0.3)
-            start = time.time()
-            while time.time() - start < 3:
-                if ser.in_waiting:
-                    _ = ser.readline().decode(errors='ignore').strip()
-    except Exception as e:
-        log(f"[ERR] Serial: {e}")
+        roundness = compute_roundness(cnt)
+        if roundness >= ROUNDNESS_THRESHOLD:
+            score = area * roundness
+            (x, y), _ = cv2.minEnclosingCircle(cnt)
+            if score > best_score:
+                best = (int(x), int(y))
+                best_score = score
+    return best
 
 def detect_yolo_center(frame):
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = model(rgb)
     for box in results[0].boxes.data:
-        x1, y1, x2, y2, _, _ = box.tolist()
+        x1, y1, x2, y2, *_ = box.tolist()
         cx = int((x1 + x2) / 2)
         cy = FRAME_HEIGHT - int((y1 + y2) / 2)
-        return ((cx, cy), 0)
-    return [(tuple(Target_Point))]
+        return (cx, cy)
+    return None
 
-def is_close(p1, p2, tolerance=TOLERANCE_PX):
-    return abs(p1[0] - p2[0]) <= tolerance and abs(p1[1] - p2[1]) <= tolerance
+def calculate_steps(from_point, to_point):
+    dx = to_point[0] - from_point[0]
+    dy = from_point[1] - to_point[1]
+    dx_mm = abs(dx) * PIXEL_TO_MM_X
+    dy_mm = abs(dy) * PIXEL_TO_MM_Y
+    dx_steps = min(int(dx_mm * STEPS_PER_MM), MAX_STEPS)
+    dy_steps = min(int(dy_mm * STEPS_PER_MM), MAX_STEPS)
+    dix = 1 if dx > 0 else 0
+    diy = 1 if dy > 0 else 0
+    command = f"{dix},{diy},{dx_steps},{dy_steps}"
+    return dx, dy, dx_steps, dy_steps, command
 
-def return_to_origin():
-    dx_home = HOME_OFFSET[0]
-    dy_home = HOME_OFFSET[1]
-    move_stage(dx_home, dy_home)
-    log("[Return] move complete.")
+class MainWindow(QWidget):
+    def __init__(self, loop):
+        super().__init__()
+        self.loop = loop
+        self.setWindowTitle("Wafer Align (PyQt5)")
+        self.setMinimumSize(640, 480)
 
-def return_to_home_dxdy():
-    global confirmed_center
-    if confirmed_center is None:
-        log("[HOME] move pass.")
-        return
-    dx = HOME_DXDY[0] - confirmed_center[0]
-    dy = HOME_DXDY[1] - confirmed_center[1]
-    move_stage(dx, dy)
-    log(f"[HOME] 원위치 {HOME_DXDY}로 원위치 완료.")
-alignment_thread = None
-alignment_done = False
+        self.cap = cv2.VideoCapture(CAMERA_INDEX)
+        self.cap.set(3, FRAME_WIDTH)
+        self.cap.set(4, FRAME_HEIGHT)
 
-def threaded_alignment():
-    global already_moved, tracking_stopped, alignment_done, alignment_thread
-    wafer = detect_opencv_priority_center(frame_global)
-    if not wafer:
-        wafer = detect_yolo_center(frame_global)[0]
-    dx_local = wafer[0] - Target_Point[0]
-    dy_local = Target_Point[1] - wafer[1]
-    log(f"[DEBUG] dx = {dx_local}, dy = {dy_local}")
-    if abs(dx_local) <= TOLERANCE_PX and abs(dy_local) <= TOLERANCE_PX:
-        log("[Align] Within tolerance.")
-        return_to_origin()
-        already_moved = True
-        tracking_stopped = True
-        alignment_done = True
-    else:
-        move_stage(dx_local, dy_local)
-        for _ in range(30):  # 1초 대기하며 GUI 처리
-            time.sleep(0.033)
-        # 정렬 다시 시도하도록 상태 초기화
-        confirmed_center = None
-        last_detected = None
-        already_moved = False
-        tracking_stopped = False
-        alignment_thread = None
+        self.image_label = QLabel()
+        self.image_label.setScaledContents(True)
+        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.label_coords = QLabel("남은좌표: (0, 0)")
+        self.label_accuracy = QLabel("정확도: 0%")
+        self.label_state = QLabel("상태: 대기")
+        for label in [self.label_coords, self.label_accuracy, self.label_state]:
+            label.setStyleSheet("font-size: 14px; padding: 4px;")
+
+        status_layout = QHBoxLayout()
+        status_layout.addWidget(self.label_coords)
+        status_layout.addWidget(self.label_accuracy)
+        status_layout.addWidget(self.label_state)
+
+        layout = QVBoxLayout()
+        layout.addWidget(self.image_label)
+        layout.addLayout(status_layout)
+        self.setLayout(layout)
+
+        self.ser_reader = None
+        self.ser_writer = None
+        self.serial_ready = False
+        self.command_task = None
+        self.reset_timer = QTimer()
+        self.reset_timer.setSingleShot(True)
+        self.reset_timer.timeout.connect(self.set_waiting)
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(30)
+
+        self.setMouseTracking(True)
+        self.show()
+
+    def set_waiting(self):
+        self.label_state.setText("상태: 정렬대기")
+
+    async def serial_setup(self):
+        try:
+            self.ser_reader, self.ser_writer = await serial_asyncio.open_serial_connection(url=SERIAL_PORT, baudrate=BAUDRATE)
+            self.serial_ready = True
+            log("[INIT] Serial ready")
+        except Exception as e:
+            log(f"[ERR] Serial setup failed: {e}")
+    async def send_serial_command(self, command):
+        global sending_command, awaiting_done, last_sent_command, force_send, home_mode, send_enabled
+
+        if not self.serial_ready or self.ser_writer is None:
+            return
+        if sending_command or awaiting_done:
+            return
+        if command == last_sent_command and not force_send:
+            return
+
+        sending_command = True
+        awaiting_done = True
+        try:
+            self.ser_writer.write((command + "\n").encode())
+            await self.ser_writer.drain()
+            log(f"[SEND] {command}")
+            last_sent_command = command
+            force_send = False
+            if home_mode:
+                self.label_state.setText("상태: 원위치 중")
+            else:
+                self.label_state.setText("상태: 정렬중")
+
+            while True:
+                try:
+                    line = await asyncio.wait_for(self.ser_reader.readline(), timeout=10.0)
+                    decoded = line.decode().strip()
+                    log(f"[ARDUINO] {decoded}")
+                    if "DONE" in decoded or "READY" in decoded:
+                        break
+                except asyncio.TimeoutError:
+                    log("[TIMEOUT] No DONE received")
+                    break
+        except Exception as e:
+            log(f"[ERR] Serial: {e}")
+        finally:
+            sending_command = False
+            awaiting_done = False
+            if home_mode:
+                self.label_state.setText("상태: 원위치 완료")
+                home_mode = False
+                send_enabled = False
+            else:
+                self.reset_timer.start(5000)
+
+    def keyPressEvent(self, event):
+        global confirmed_center, stable_count, last_sent_command
+        global Target_Point, home_mode, send_enabled, setting_target_mode, force_send
+
+        if not self.serial_ready:
+            return
+
+        key = event.key()
+        if key == Qt.Key_S:
+            send_enabled = not send_enabled
+            log(f"[SEND MODE] {'Enabled' if send_enabled else 'Disabled'}")
+            self.label_state.setText("상태: 정렬중" if send_enabled else "상태: 대기")
+        elif key == Qt.Key_P:
+            asyncio.create_task(self.send_serial_command("0,0,0,0"))
+        elif key == Qt.Key_R:
+            confirmed_center = None
+            stable_count = 0
+            last_sent_command = ""
+        elif key == Qt.Key_U:
+            if confirmed_center and not awaiting_done and not sending_command:
+                home_mode = True
+                dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, HOME_DXDY)
+                if dx_steps + dy_steps < 10:
+                    self.label_state.setText("상태: 원위치 완료")
+                    send_enabled = False
+                else:
+                    asyncio.create_task(self.send_serial_command(command))
+        elif key == Qt.Key_M:
+            setting_target_mode = not setting_target_mode
+            log("[TARGET] Click to set Target_Point" if setting_target_mode else "[TARGET] Reset to default")
+            if not setting_target_mode:
+                Target_Point[0] = FRAME_WIDTH // 2
+                Target_Point[1] = FRAME_HEIGHT // 2
+        elif key == Qt.Key_Q:
+            self.close()
+
+    def mousePressEvent(self, event):
+        global Target_Point, setting_target_mode, last_sent_command, force_send, confirmed_center
+        if setting_target_mode and event.button() == Qt.LeftButton:
+            x = int(event.pos().x() * FRAME_WIDTH / self.image_label.width())
+            y = int(event.pos().y() * FRAME_HEIGHT / self.image_label.height())
+            Target_Point = [x, y]
+            last_sent_command = ""
+            force_send = True
+            setting_target_mode = False
+            if confirmed_center:
+                dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, Target_Point)
+                asyncio.create_task(self.send_serial_command(command))
+
+    def update_frame(self):
+        global confirmed_center, stable_count
+        if not self.serial_ready:
+            return
+
+        ret, frame = self.cap.read()
+        if not ret:
+            return
+
+        display = frame.copy()
+        center = detect_best_yellow_circle(frame) or detect_yolo_center(frame)
+        if center:
+            confirmed_center = center
+            dx, dy, dx_steps, dy_steps, command = calculate_steps(center, Target_Point)
+
+            self.label_coords.setText(f"남은좌표: ({dx}, {dy})")
+
+            if abs(dx) <= TOLERANCE_PX and abs(dy) <= TOLERANCE_PX:
+                if send_enabled and not awaiting_done and not sending_command:
+                    stable_count += 1
+                if stable_count >= STABLE_REQUIRED:
+                    self.label_state.setText("상태: 정렬완료")
+            else:
+                stable_count = 0
+
+            if send_enabled and stable_count < STABLE_REQUIRED:
+                asyncio.create_task(self.send_serial_command(command))
+
+            if max(abs(dx), abs(dy)) < 100:
+                error_ratio = max(abs(dx), abs(dy)) / max(FRAME_WIDTH, FRAME_HEIGHT)
+                progress = max(0, 100 - int(error_ratio * 100))
+            else:
+                progress = 0
+            self.label_accuracy.setText(f"정확도: {progress}%")
+        else:
+            self.label_coords.setText("남은좌표: (0, 0)")
+            self.label_accuracy.setText("정확도: 0%")
+
+        cv2.circle(display, tuple(Target_Point), 5, (0, 0, 255), -1)
+        if confirmed_center:
+            cv2.circle(display, confirmed_center, 5, (0, 255, 0), -1)
+            cv2.line(display, tuple(Target_Point), confirmed_center, (255, 0, 0), 2)
+
+        rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+        self.image_label.setPixmap(QPixmap.fromImage(img))
 
 def main():
-    global last_detected, confirm_start_time, confirmed_center
-    global already_moved, tracking_stopped, show_limit_box
-    global frame_global, alignment_thread, alignment_done
-
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-    cap.set(3, FRAME_WIDTH)
-    cap.set(4, FRAME_HEIGHT)
-    cv2.namedWindow("Wafer Align", cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback("Wafer Align", mouse_callback)
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            log("[Camera] Read Fail")
-            break
-        frame_global = frame.copy()
-
-        if not tracking_stopped:
-            wafer = detect_opencv_priority_center(frame)
-            if not wafer:
-                wafer = detect_yolo_center(frame)[0]
-            if wafer:
-                if last_detected and is_close(wafer, last_detected):
-                    if confirm_start_time and time.time() - confirm_start_time > TRACK_CONFIRM_TIME and not confirmed_center:
-                        confirmed_center = wafer
-                else:
-                    confirm_start_time = time.time()
-                    last_detected = wafer
-
-                if confirmed_center and not already_moved and alignment_thread is None:
-                    alignment_done = False
-                    alignment_thread = threading.Thread(target=threaded_alignment)
-                    alignment_thread.start()
-
-        if wafer:
-            cv2.circle(frame, wafer, 5, (0,255,0), -1)
-        cv2.circle(frame, tuple(Target_Point), 5, (0,0,255), -1)
-        if wafer:
-            cv2.line(frame, wafer, tuple(Target_Point), (255,0,0), 2)
-
-        if show_limit_box:
-            draw_limit_box(frame)
-
-        show_log_window()
-        cv2.imshow("Wafer Align", frame)
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('r'):
-            log("[RESET] Manual reset")
-            last_detected = None
-            confirm_start_time = None
-            confirmed_center = None
-            already_moved = False
-            tracking_stopped = False
-            alignment_thread = None
-            alignment_done = False
-            log_buffer.clear()
-        elif key == ord('w'):
-            show_limit_box = not show_limit_box
-        elif key == ord('u'):
-            return_to_home_dxdy()
-            log("[Manual] Returned to absolute HOME_DXDY")
-
-    cap.release()
-    cv2.destroyAllWindows()
+    app = QApplication(sys.argv)
+    loop = QEventLoop(app)
+    asyncio.set_event_loop(loop)
+    window = MainWindow(loop)
+    loop.run_until_complete(window.serial_setup())
+    with loop:
+        loop.run_forever()
 
 if __name__ == "__main__":
     main()
