@@ -1,0 +1,486 @@
+import sys
+import cv2
+import numpy as np
+import asyncio
+import serial_asyncio
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt, QTimer
+from ultralytics import YOLO
+from qasync import QEventLoop
+import os
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy, QPushButton  # QPushButton 추가
+import time
+from datetime import datetime
+from PyQt5.QtWidgets import QTextEdit
+
+os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "0"
+
+FRAME_WIDTH = 1280
+FRAME_HEIGHT = 720
+Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
+TOLERANCE_PX = 1
+PIXEL_TO_MM_X = 0.6
+PIXEL_TO_MM_Y = 0.83
+STEPS_PER_MM = 55
+MAX_STEPS = 32000
+BAUDRATE = 9600
+SERIAL_PORT = "/dev/ttyACM0"
+CAMERA_INDEX = 0
+HOME_DXDY = (500, 250)
+
+YELLOW_LOWER = (20, 150, 150)
+YELLOW_UPPER = (35, 255, 255)
+AREA_THRESHOLD = 1000
+ROUNDNESS_THRESHOLD = 0.4
+
+model = YOLO("yolov8n.pt")
+
+home_align_mode = False
+confirmed_center = None
+send_enabled = False
+sending_command = False
+awaiting_done = False
+home_mode = False
+stable_count = 0
+STABLE_REQUIRED = 3
+last_sent_command = ""
+setting_target_mode = False
+force_send = False
+stop_requested = False
+
+log_file_path = f"log_{datetime.now().strftime('%Y.%m.%d_%H:%M:%S')}.txt"
+last_log_time = {}
+LOG_REPEAT_INTERVAL = 10 #sec
+
+def log(message):
+global last_log_time
+timestamp = datetime.now().strftime("%H:%M")
+log_entry = f"{timestamp} {message}"
+
+repeat_interval = LOG_REPEAT_INTERVAL  
+if message == "ALIGN DONE":  
+    repeat_interval = 36000000000000  
+
+if message in last_log_time:  
+    elapsed = time.time() - last_log_time[message]  
+    if elapsed < LOG_REPEAT_INTERVAL:  
+        return  
+    last_log_time[message] = time.time()  
+
+print(log_entry)  
+
+if hasattr(MainWindow, "instance") and hasattr(MainWindow.instance, "log_box"):  
+    MainWindow.instance.log_box.append(log_entry)  
+
+with open(log_file_path, "a", encoding="utf-8") as f:  
+    f.write(log_entry + "\n")
+
+def compute_roundness(cnt):
+area = cv2.contourArea(cnt)
+perimeter = cv2.arcLength(cnt, True)
+if perimeter == 0:
+return 0
+return 4 * np.pi * area / (perimeter * perimeter)
+
+def detect_best_yellow_circle(frame):
+hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+mask = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
+mask = cv2.GaussianBlur(mask, (7, 7), 2)
+contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+best = None
+best_score = 0
+for cnt in contours:
+area = cv2.contourArea(cnt)
+if area < AREA_THRESHOLD:
+continue
+roundness = compute_roundness(cnt)
+if roundness >= ROUNDNESS_THRESHOLD:
+score = area * roundness
+(x, y), _ = cv2.minEnclosingCircle(cnt)
+if x < 50 or x > FRAME_WIDTH - 50 or y < 50 or y > FRAME_HEIGHT - 50:
+continue
+if score > best_score:
+best = (int(x), int(y))
+best_score = score
+return best
+
+def detect_yolo_center(frame):
+rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+results = model(rgb)
+for box in results[0].boxes.data:
+x1, y1, x2, y2, *_ = box.tolist()
+cx = int((x1 + x2) / 2)
+cy = FRAME_HEIGHT - int((y1 + y2) / 2)
+return (cx, cy)
+return None
+def calculate_steps(from_point, to_point):
+dx = to_point[0] - from_point[0]
+dy = from_point[1] - to_point[1]
+dx_mm = abs(dx) * PIXEL_TO_MM_X
+dy_mm = abs(dy) * PIXEL_TO_MM_Y
+dx_steps = min(int(dx_mm * STEPS_PER_MM), MAX_STEPS)
+dy_steps = min(int(dy_mm * STEPS_PER_MM), MAX_STEPS)
+dix = 1 if dx > 0 else 0
+diy = 1 if dy > 0 else 0
+command = f"{dix},{diy},{dx_steps},{dy_steps}"
+return dx, dy, dx_steps, dy_steps, command
+
+class MainWindow(QWidget):
+def init(self, loop):
+super().init()
+self.loop = loop
+self.setWindowTitle("Wafer Align (PyQt5)")
+self.setMinimumSize(640, 480)
+
+self.aligning = False  # 정렬 활성화 상태 추적용  
+    self.align_done_logged = False  
+
+    instance = None  
+    MainWindow.instance = self  
+    global home_align_mode  
+    home_align_mode = False  
+
+    self.stop_requested = False  
+    self.stop_sent = False  
+    stop_requested = False  
+
+    self.log_box = QTextEdit()  
+    self.log_box.setReadOnly(True)  
+    self.log_box.setStyleSheet("font-size: 14px background-color: #1e1e1e; color: #dcdcdc;")  
+
+
+    self.cap = cv2.VideoCapture(CAMERA_INDEX)  
+    self.cap.set(3, FRAME_WIDTH)  
+    self.cap.set(4, FRAME_HEIGHT)  
+      
+    self.align_button = QPushButton("정렬 시작", self)  
+    self.home_button = QPushButton("원위치", self)  
+    self.reset_button = QPushButton("초기화", self)  
+    self.target_button = QPushButton("목표 설정", self)  
+    self.pause_button = QPushButton("정지")  
+      
+
+    self.align_button.clicked.connect(self.handle_align_toggle)  
+    self.home_button.clicked.connect(self.handle_home)  
+    self.reset_button.clicked.connect(self.handle_reset)  
+    self.target_button.clicked.connect(self.handle_target_mode)  
+    self.pause_button.clicked.connect(self.handle_pause)  
+                             
+    self.accuracy_timer = None  
+    self.confirmed_accuracy = 0  
+    self.complete_timer = None  
+    self.completed_frozen = False  
+
+    self.image_label = QLabel()  
+    self.image_label.setScaledContents(True)  
+    self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  
+
+    self.label_coords = QLabel("남은좌표: (0, 0)")  
+    self.label_accuracy = QLabel("정확도: 0%")  
+    self.label_state = QLabel("상태: 대기")  
+    for label in [self.label_coords, self.label_accuracy, self.label_state]:  
+        label.setStyleSheet("font-size: 14px; padding: 4px;")  
+
+    status_layout = QHBoxLayout()  
+    status_layout.addWidget(self.label_coords)  
+    status_layout.addWidget(self.label_accuracy)  
+    status_layout.addWidget(self.label_state)  
+
+    layout = QVBoxLayout()  
+    layout.addWidget(self.image_label)  
+    layout.addLayout(status_layout)  
+    layout.addWidget(self.log_box)  
+    self.setLayout(layout)  
+
+    button_layout = QHBoxLayout()  
+    button_layout.addWidget(self.align_button)  
+    button_layout.addWidget(self.home_button)  
+    button_layout.addWidget(self.reset_button)  
+    button_layout.addWidget(self.target_button)  
+    button_layout.addWidget(self.pause_button)  
+
+
+    layout.addLayout(button_layout)  
+    self.setLayout(layout)  
+
+    self.ser_reader = None  
+    self.ser_writer = None  
+    self.serial_ready = False  
+    self.command_task = None  
+
+    self.reset_timer = QTimer()  
+    self.reset_timer.setSingleShot(True)  
+    self.reset_timer.timeout.connect(self.set_waiting)  
+
+    self.timer = QTimer()  
+    self.timer.timeout.connect(self.update_frame)  
+    self.timer.start(30)  
+
+    self.setMouseTracking(True)  
+    self.show()  
+
+def append_log(self, entry):  
+    current = self.log_text.toPlatinText()  
+    if current.endswitch(entry):  
+        return  
+    self.log_text.append(entry)  
+
+    with open("wafer_log.txt %H:%M", "a") as f:  
+        f.write(entry + "\n")   
+def handle_align_toggle(self):  
+    global send_enabled, stop_requested  
+    send_enabled = True  
+    stop_requested = False  
+    self.aligning = True  
+    self.align_done_logged = False  
+    log("[ALIGN] Started via BUtton")  
+    self.label_state.setText("상태: 정렬중")  
+def handle_home(self):  
+    global Target_Point, home_mode, home_align_mode  
+    if confirmed_center and not awaiting_done and not sending_command:  
+        home_mode = True  
+        home_align_mode = True  
+        Target_Point[0], Target_Point[1] = HOME_DXDY  
+        dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, Target_Point)  
+        if dx_steps + dy_steps < 10:  
+            self.label_state.setText("상태: 원위치 완료")  
+            send_enabled = False  
+            home_align_mode = False  
+        else:  
+            asyncio.create_task(self.send_serial_command(command))  
+
+def handle_reset(self):  
+    global confirmed_center, stable_count, last_sent_command  
+    confirmed_center = None  
+    stable_count = 0  
+    last_sent_command = ""  
+
+def handle_target_mode(self):  
+    global setting_target_mode  
+    setting_target_mode = not setting_target_mode  
+    log("[TARGET] Click to set Target_Point" if setting_target_mode else "[TARGET] Reset to default")  
+    if not setting_target_mode:  
+        Target_Point[0] = FRAME_WIDTH // 2  
+        Target_Point[1] = FRAME_HEIGHT // 2  
+
+def set_waiting(self):  
+    self.label_state.setText("상태: 정렬대기")  
+
+def handle_pause(self):  
+    global stop_requested, send_enabled  
+    stop_requested = True  
+    send_enabled = False  
+    self.aligning = False  
+    if self.serial_ready and self.ser_writer is not None:  
+        try:  
+            self.ser_writer.write(("STOP\n").encode())  
+            log("[SEND] STOP")  
+            self.label_state.setText("상태: 정지")  
+        except Exception as e:  
+            log(f"[ERR] Failed to send STOP: {e}")  
+
+      
+async def serial_setup(self):  
+    try:  
+        self.ser_reader, self.ser_writer = await serial_asyncio.open_serial_connection(  
+            url=SERIAL_PORT, baudrate=BAUDRATE)  
+        self.serial_ready = True  
+        log("[INIT] Serial ready")  
+    except Exception as e:  
+        log(f"[ERR] Serial setup failed: {e}")  
+async def send_serial_command(self, command):  
+    global sending_command, awaiting_done, last_sent_command, force_send, home_mode, send_enabled, home_align_mode, stop_requested  
+
+    if not self.serial_ready or self.ser_writer is None:  
+        return  
+    if sending_command or awaiting_done:  
+        return  
+    if command == last_sent_command and not force_send:  
+        return  
+    if stop_requested and command != "STOP":  
+        log("[BLOCKED] Command blocked due to STOP")  
+        return  
+
+    sending_command = True  
+    awaiting_done = True  
+    try:  
+        self.ser_writer.write((command + "\n").encode())  
+        await self.ser_writer.drain()  
+        log(f"[SEND] {command}")  
+        last_sent_command = command  
+        force_send = False  
+        if home_mode:  
+            self.label_state.setText("상태: 원위치 중")  
+        else:  
+            self.label_state.setText("상태: 정렬중")  
+
+        while True:  
+            try:  
+                line = await asyncio.wait_for(self.ser_reader.readline(), timeout=10.0)  
+                decoded = line.decode().strip()  
+                log(f"[ARDUINO] {decoded}")  
+                if "DONE" in decoded or "READY" in decoded:  
+                    if self.stop_requested and command == "STOP":  
+                        self.stop_requested = False  
+                        self.stop_sent = False  
+                        log("[STOP] Complete, resume allowed")  
+                    break  
+            except asyncio.TimeoutError:  
+                log("[TIMEOUT] No DONE received")  
+                break  
+    except Exception as e:  
+        log(f"[ERR] Serial: {e}")  
+    finally:  
+        sending_command = False  
+        awaiting_done = False  
+        if home_align_mode and not home_mode:  
+            if confirmed_center:  
+                dx, dy, dx_steps, command = calculate_steps(confirmed_center, Target_Point)  
+            self.label_state.setText("상태: 원위치 완료")  
+            home_align_mode = False  
+            send_enabled = False  
+        else:  
+            await asyncio.sleep(0.1)  
+            asyncio.create_task(self.send_serial_command(command))  
+
+def keyPressEvent(self, event):  
+    global confirmed_center, stable_count, last_sent_command  
+    global Target_Point, home_mode, send_enabled, setting_target_mode, force_send  
+
+    if not self.serial_ready:  
+        return  
+
+    key = event.key()  
+    if key == Qt.Key_S:  
+        self.handle_align_toggle()  
+    elif key == Qt.Key_P:  
+        if not self.stop_requested:  
+            self.stop_requested = True  
+            self.stop_sent = False  
+            asyncio.create_task(self.send_serial_command("STOP"))  
+            log("[STOP] Sent")  
+    elif key == Qt.Key_R:  
+        confirmed_center = None  
+        stable_count = 0  
+        last_sent_command = ""  
+    elif key == Qt.Key_U:  
+        if confirmed_center and not awaiting_done and not sending_command:  
+            home_mode = True  
+            home_align_mode = True  
+            Target_Point[0], Target_Point[1] = HOME_DXDY  
+            dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, Target_Point)  
+            if dx_steps + dy_steps < 10:  
+                self.label_state.setText("상태: 원위치 완료")  
+                send_enabled = False  
+                home_align_mode = False  
+            else:  
+                asyncio.create_task(self.send_serial_command(command))  
+    elif key == Qt.Key_M:  
+        setting_target_mode = not setting_target_mode  
+        log("[TARGET] Click to set Target_Point" if setting_target_mode else "[TARGET] Reset to default")  
+        if not setting_target_mode:  
+            Target_Point[0] = FRAME_WIDTH // 2  
+            Target_Point[1] = FRAME_HEIGHT // 2  
+    elif key == Qt.Key_Q:  
+        self.close()  
+
+def mousePressEvent(self, event):  
+    global Target_Point, setting_target_mode, last_sent_command, force_send, confirmed_center  
+    if setting_target_mode and event.button() == Qt.LeftButton:  
+        x = int(event.pos().x() * FRAME_WIDTH / self.image_label.width())  
+        y = int(event.pos().y() * FRAME_HEIGHT / self.image_label.height())  
+        Target_Point = [x, y]  
+        self.align_done_logged = False  
+        last_sent_command = ""  
+        force_send = True  
+        setting_target_mode = False  
+        if confirmed_center and send_enabled:  
+            dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, Target_Point)  
+            asyncio.create_task(self.send_serial_command(command))  
+
+def update_frame(self):  
+    global confirmed_center, stable_count  
+    if not self.serial_ready:  
+        return  
+
+    ret, frame = self.cap.read()  
+    if not ret:  
+        return  
+    if home_align_mode:  
+        center = detect_best_yellow_circle(frame) or detect_yolo_center(frame)  
+    else:  
+        center = detect_best_yellow_circle(frame) or detect_yolo_center(frame)  
+    display = frame.copy()  
+
+    if center:  
+        confirmed_center = center  
+        dx, dy, dx_steps, dy_steps, command = calculate_steps(center, Target_Point)  
+
+        self.label_coords.setText(f"남은좌표: ({dx}, {dy})")  
+
+        if abs(dx) <= TOLERANCE_PX and abs(dy) <= TOLERANCE_PX:  
+            if send_enabled and not awaiting_done and not sending_command:  
+                stable_count += 1  
+            if stable_count >= STABLE_REQUIRED:  
+                self.label_state.setText("상태: 정렬완료")  
+                if not self.align_done_logged:  
+                    log("ALIGN DONE")  
+                    self.align_done_logged = True  
+                else:  
+                    stable_count = 0  
+                    if self.align_done_logged:  
+                        self.align_done_logged = False  
+
+        if send_enabled and stable_count < STABLE_REQUIRED:  
+            if not (self.align_done_logged and dx == 0, dy == 0 and self.confirmed_accuracy >= 98 ):  
+                asyncio.create_task(self.send_serial_command(command))  
+
+        error_distance = np.linalg.norm(np.array(Target_Point) - np.array(confirmed_center))  
+        if error_distance <= 1:  
+            progress = 100  
+        elif error_distance >= 30:  
+            progress = 0  
+        else:  
+            progress = int((1 - (error_distance / 30)) * 100)  
+        if progress == 100:  
+            if self.accuracy_timer is None:  
+                self.accuracy_timer = cv2.getTickCount()  
+                self.confirmed_accuracy = progress    
+            else:  
+                elapsed_time = (cv2.getTickCount() - self.accuracy_timer) / cv2.getTickFrequency()  
+                if elapsed_time >= 2.0:  
+                    self.confirmed_accuracy = 100  
+        else:     
+            self.accuracy_timer = None  
+            self.confirmed_accuracy = progress  
+
+        self.label_accuracy.setText(f"정확도: {self.confirmed_accuracy}%")  
+    else:  
+        self.label_coords.setText("남은좌표: (0, 0)")  
+        self.label_accuracy.setText("정확도: 0%")  
+
+    cv2.circle(display, tuple(Target_Point), 5, (0, 0, 255), -1)  
+    if confirmed_center:  
+        cv2.circle(display, confirmed_center, 5, (0, 255, 0), -1)  
+        cv2.line(display, tuple(Target_Point), confirmed_center, (255, 0, 0), 2)  
+
+    rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)  
+    h, w, ch = rgb.shape  
+    img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)  
+    self.image_label.setPixmap(QPixmap.fromImage(img))  
+
+    log(f"[DEBUG] center={confirmed_center}, dx={dx}, dy={dy}, acc={self.confirmed_accuracy}")
+
+def main():
+app = QApplication(sys.argv)
+loop = QEventLoop(app)
+asyncio.set_event_loop(loop)
+window = MainWindow(loop)
+loop.run_until_complete(window.serial_setup())
+with loop:
+loop.run_forever()
+
+if name == "main":
+main()
+
