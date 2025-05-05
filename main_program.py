@@ -15,11 +15,10 @@ import os
 
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "0"
 
-# === 설정 ===
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
-TOLERANCE_PX = 1
+TOLERANCE_PX = 5
 PIXEL_TO_MM_X = 0.6
 PIXEL_TO_MM_Y = 0.83
 STEPS_PER_MM = 55
@@ -40,7 +39,6 @@ FONT_THICKNESS = 2
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 TEXT_COLOR = (255, 255, 255)
 
-# 클래스별 색상
 CLASS_COLORS = {
     'F1': (0, 255, 255),
     'F2': (0, 255, 0),
@@ -49,7 +47,6 @@ CLASS_COLORS = {
 }
 model = YOLO("runs/detect/train4/weights/best.pt")
 
-# === 상태 전역변수 ===
 confirmed_center = None
 send_enabled = False
 sending_command = False
@@ -92,26 +89,17 @@ def detect_best_yellow_circle(frame):
     return best
 
 def draw_yolo_boxes(frame, results, window=None):
-
     for box in results[0].boxes.data:
         x1, y1, x2, y2, conf, cls = box.tolist()
         class_name = results[0].names[int(cls)]
         color = CLASS_COLORS.get(class_name, (0, 255, 0))
-        
-        # 바운딩 박스
         cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
-
-        # 텍스트 배경
         label = f"{class_name}"
         ((tw, th), _) = cv2.getTextSize(label, FONT, FONT_SCALE, FONT_THICKNESS)
         cv2.rectangle(frame, (int(x1), int(y1 - th - 4)), (int(x1 + tw), int(y1)), color, -1)
-
-        # 텍스트
         cv2.putText(frame, label, (int(x1), int(y1 - 4)), FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
-
         if window:
             log(f"[DETECT] {class_name} at ({int((x1 + x2) / 2)}, {int((y1 + y2) / 2)})", window)
-
 
 def detect_yolo_center(frame):
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -122,6 +110,12 @@ def detect_yolo_center(frame):
         cy = FRAME_HEIGHT - int((y1 + y2) / 2)
         return (cx, cy)
     return None
+
+def calculate_angle(pt1, pt2):
+    dx = pt2[0] - pt1[0]
+    dy = pt2[1] - pt1[1]
+    angle = np.degrees(np.arctan2(dy, dx))
+    return angle + 360 if angle < 0 else angle
 
 def calculate_steps(from_point, to_point):
     dx = to_point[0] - from_point[0]
@@ -138,7 +132,7 @@ class MainWindow(QWidget):
     def __init__(self, loop):
         super().__init__()
         self.loop = loop
-        self.setWindowTitle("Wafer Align with YOLO Classification")
+        self.setWindowTitle("Wafer_Aligner")
         self.setMinimumSize(800, 600)
 
         self.cap = cv2.VideoCapture(CAMERA_INDEX)
@@ -213,7 +207,6 @@ class MainWindow(QWidget):
 
     async def send_serial_command(self, command):
         global sending_command, awaiting_done, last_sent_command, force_send, home_mode, send_enabled
-
         if not self.serial_ready or self.ser_writer is None:
             return
         if sending_command or awaiting_done:
@@ -302,17 +295,33 @@ class MainWindow(QWidget):
             return
 
         display = frame.copy()
-
-        # YOLO 결과 바운딩 박스 표시
         results = model(display)
         draw_yolo_boxes(display, results, self)
+
+        wafer_center = None
+        f1_center = None
+        for box in results[0].boxes.data:
+            x1, y1, x2, y2, conf, cls = box.tolist()
+            label = results[0].names[int(cls)]
+            cx = int((x1 + x2) / 2)
+            cy = int((y1 + y2) / 2)
+            if label in ["P100", "P111"]:
+                wafer_center = (cx, cy)
+            elif label == "F1":
+                f1_center = (cx, cy)
+
+        if wafer_center and f1_center:
+            angle = calculate_angle(wafer_center, f1_center)
+            log(f"[ANGLE] {angle:.2f} deg (Wafer to F1)", self)
+            angle_text = f"{angle:.2f}deg"
+            text_pos = (wafer_center[0] + 10, wafer_center[1] - 10)
+            cv2.putText(display, angle_text, text_pos, FONT, FONT_SCALE, (255, 255, 0), FONT_THICKNESS)
 
         center = detect_best_yellow_circle(display) or detect_yolo_center(display)
         if center:
             confirmed_center = center
             dx, dy, dx_steps, dy_steps, command = calculate_steps(center, Target_Point)
             self.label_coords.setText(f"남은좌표: ({dx}, {dy})")
-
             if abs(dx) <= TOLERANCE_PX and abs(dy) <= TOLERANCE_PX:
                 if send_enabled and not awaiting_done and not sending_command:
                     stable_count += 1
@@ -320,7 +329,6 @@ class MainWindow(QWidget):
                     self.label_state.setText("상태: 정렬완료")
             else:
                 stable_count = 0
-
             if send_enabled and stable_count < STABLE_REQUIRED:
                 asyncio.create_task(self.send_serial_command(command))
 
