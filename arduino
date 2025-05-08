@@ -1,74 +1,108 @@
-// 수정된 Arduino 코드: 방향 문제 해결
+#define DIR_X 2
+#define STEP_X 3
+#define EN_X 6
 
-#define DIR_X 2      // X축 방향 (CW+)
-#define STEP_X 3     // X축 스텝 (CLK+)
-#define EN_X 6       // X축 활성화 (EN+)
+#define DIR_Y 4
+#define STEP_Y 5
+#define EN_Y 7
 
-#define DIR_Y 4      // Y축 방향 (CW+)
-#define STEP_Y 5     // Y축 스텝 (CLK+)
-#define EN_Y 7       // Y축 활성화 (EN+)
+#define DIR_R 8
+#define STEP_R 9
+#define EN_R 10
 
-#define STEP_DELAY 800  // 스텝 딜레이 (마이크로초)
+#define STEP_DELAY 800  // 마이크로초 단위
+
+bool ready_for_command = false;
+String input = "";
 
 void setup() {
   pinMode(DIR_X, OUTPUT);  pinMode(STEP_X, OUTPUT);  pinMode(EN_X, OUTPUT);
   pinMode(DIR_Y, OUTPUT);  pinMode(STEP_Y, OUTPUT);  pinMode(EN_Y, OUTPUT);
+  pinMode(DIR_R, OUTPUT);  pinMode(STEP_R, OUTPUT);  pinMode(EN_R, OUTPUT);
 
-  digitalWrite(EN_X, HIGH);  // 기본은 비활성화
+  digitalWrite(EN_X, HIGH);
   digitalWrite(EN_Y, HIGH);
+  digitalWrite(EN_R, HIGH);
 
   Serial.begin(9600);
+  delay(2000);
   Serial.println("[Arduino] READY");
-  Serial.flush(); // 즉시 출력
+  ready_for_command = true;
 }
 
 void loop() {
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
+  if (!ready_for_command) return;
 
-    if (cmd == "HOME") {
-      Serial.println("[Arduino] HOMING triggered");
-      Serial.flush();
-      return;
-    }
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n') {
+      input.trim();
+      if (input.length() >= 11) {
+        ready_for_command = false;
+        processCommand(input);
+        input = "";
 
-    int dix = -1, diy = -1;
-    long stx = 0, sty = 0;
+        while (Serial.available()) Serial.read();
 
-    int i1 = cmd.indexOf(',');
-    int i2 = cmd.indexOf(',', i1 + 1);
-    int i3 = cmd.indexOf(',', i2 + 1);
-
-    if (i1 > 0 && i2 > i1 && i3 > i2) {
-      dix = cmd.substring(0, i1).toInt();
-      diy = cmd.substring(i1 + 1, i2).toInt();
-      stx = cmd.substring(i2 + 1, i3).toInt();
-      sty = cmd.substring(i3 + 1).toInt();
-
-      // 방향 반전: 필요 시 1 - 값
-      dix = 1 - dix;  // X축 방향 반전
-      diy = 1 - diy;  // Y축 방향 반전
-
-      Serial.print("[Arduino] Parsed: Xdir="); Serial.print(dix);
-      Serial.print(" Ydir="); Serial.print(diy);
-      Serial.print(" Xstep="); Serial.print(stx);
-      Serial.print(" Ystep="); Serial.println(sty);
-      Serial.flush();
-
-      moveMotor(DIR_X, STEP_X, EN_X, dix, stx);
-      delay(300);
-      moveMotor(DIR_Y, STEP_Y, EN_Y, diy, sty);
+        ready_for_command = true;
+      } else {
+        Serial.println("[Arduino] Invalid input (too short)");
+        input = "";
+      }
     } else {
-      Serial.print("[Arduino] Parse error: "); Serial.println(cmd);
-      Serial.flush();
+      input += c;
     }
   }
 }
 
+void processCommand(String cmd) {
+  if (cmd == "HOME") {
+    Serial.println("[Arduino] HOMING triggered");
+    return;
+  }
+
+  int dix = -1, diy = -1, dirR = -1;
+  long stx = 0, sty = 0, stR = 0;
+
+  int i1 = cmd.indexOf(',');
+  int i2 = cmd.indexOf(',', i1 + 1);
+  int i3 = cmd.indexOf(',', i2 + 1);
+  int i4 = cmd.indexOf(',', i3 + 1);
+  int i5 = cmd.indexOf(',', i4 + 1);
+
+  if (i5 > 0) {
+    dix = cmd.substring(0, i1).toInt();
+    diy = cmd.substring(i1 + 1, i2).toInt();
+    stx = cmd.substring(i2 + 1, i3).toInt();
+    sty = cmd.substring(i3 + 1, i4).toInt();
+    dirR = cmd.substring(i4 + 1, i5).toInt();
+    stR = cmd.substring(i5 + 1).toInt();
+
+    Serial.print("[Arduino] Received: ");
+    Serial.println(cmd);
+    Serial.print("[Arduino] Parsed: Xdir="); Serial.print(dix);
+    Serial.print(" Ydir="); Serial.print(diy);
+    Serial.print(" Xstep="); Serial.print(stx);
+    Serial.print(" Ystep="); Serial.print(sty);
+    Serial.print(" Rdir="); Serial.print(dirR);
+    Serial.print(" Rstep="); Serial.println(stR);
+
+    moveMotor(DIR_X, STEP_X, EN_X, dix, stx);
+    delay(100);
+    moveMotor(DIR_Y, STEP_Y, EN_Y, diy, sty);
+    delay(100);
+    moveMotor(DIR_R, STEP_R, EN_R, dirR, stR);
+
+    Serial.println("DONE");
+  } else {
+    Serial.print("[Arduino] Parse error: ");
+    Serial.println(cmd);
+  }
+}
+
 void moveMotor(int dirPin, int stepPin, int enPin, bool direction, long steps) {
-  digitalWrite(enPin, LOW);             // 드라이버 활성화
-  digitalWrite(dirPin, direction);      // 방향 설정
+  digitalWrite(enPin, LOW);
+  digitalWrite(dirPin, direction);
 
   for (long i = 0; i < steps; i++) {
     digitalWrite(stepPin, HIGH);
@@ -77,8 +111,14 @@ void moveMotor(int dirPin, int stepPin, int enPin, bool direction, long steps) {
     delayMicroseconds(STEP_DELAY);
   }
 
-  digitalWrite(enPin, HIGH);            // 드라이버 비활성화
+  digitalWrite(enPin, HIGH);
 }
+
+
+
+
+
+
 
 
 // 수정 아두이노
