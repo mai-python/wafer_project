@@ -2,6 +2,7 @@ import sys
 import cv2
 import numpy as np
 import asyncio
+import time
 import serial_asyncio
 from PyQt5.QtWidgets import (
     QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy,
@@ -44,7 +45,7 @@ TEXT_COLOR = (255, 255, 255)
 Target_degree = 0
 angle = 0
 
-DEGREE_TO_STEP = 1
+DEGREE_TO_STEP = 0.2
 MAX_ROTATION_STEP = 32000
 
 CLASS_COLORS = {
@@ -54,7 +55,7 @@ CLASS_COLORS = {
     'P111': (255, 0, 0),
 }
 
-model = YOLO("runs/detect/train/weights/best.pt")
+model = YOLO("best/best.pt")
 
 confirmed_center = None
 send_enabled = False
@@ -70,6 +71,9 @@ auto_mode = False
 wafer_type_override = None
 has_f1 = False
 has_f2 = False
+fixed_f1_box = None
+fixed_f2_box = None
+
 corrected_box = []
 
 def show_warning(self, title, message):
@@ -160,7 +164,8 @@ def calculate_angle(pt1, pt2):
 def calculate_rotation(current_angle, target_angle):
     dR = (target_angle - current_angle +540) % 360-180
     diR = 1 if dR > 0 else 0
-    stR = min(int(abs(dR) * DEGREE_TO_STEP), MAX_ROTATION_STEP)
+    stR = max(1, min(int(abs(dR) * DEGREE_TO_STEP), MAX_ROTATION_STEP))
+    
     return diR, stR
 
 def calculate_steps(from_point, to_point):
@@ -197,13 +202,20 @@ class MainWindow(QWidget):
         self.label_coords = QLabel("남은좌표: (0, 0)")
         self.label_accuracy = QLabel("정확도: 0%")
         self.label_state = QLabel("상태: 대기")
-        for label in [self.label_coords, self.label_accuracy, self.label_state]:
+        self.label_angle = QLabel("회전각: 0.00°")
+        self.label_angle_error = QLabel("각도오차: 0.00°")
+
+        for label in [self.label_coords, self.label_accuracy, self.label_state, self.label_angle, self.label_angle_error]:
             label.setStyleSheet("font-size: 14px; padding: 4px;")
 
         status_layout = QHBoxLayout()
         status_layout.addWidget(self.label_coords)
         status_layout.addWidget(self.label_accuracy)
         status_layout.addWidget(self.label_state)
+        status_layout.addWidget(self.label_angle)
+        status_layout.addWidget(self.label_angle_error)
+
+    
 
         self.s_button = QPushButton("ALIGN")
         self.m_button = QPushButton("MANUAL")
@@ -251,6 +263,23 @@ class MainWindow(QWidget):
         self.setMouseTracking(True)
         self.show()
 
+    def closeEvent(self, event):
+        log("[SYSTEM] CLOSING", self)
+        if hasattr(self, 'timer') and self.cap.isOpened():
+            self.timer.stop()
+        if hasattr(self,'cap') and self.cap.isOpened():
+            self.cap.release()
+
+        if hasattr(self, 'ser_writer') and self.ser_writer is not None:
+            try:
+                self.ser_writer.close()
+                log("[SYSTEM] Serial writer closed", self)
+            except Exception as e:
+                log(f"[ERR] Error: {e}")
+        QApplication.instance().quit()
+        event.accept()
+
+
     def set_waiting(self):
         self.label_state.setText("상태: 정렬대기")
 
@@ -284,7 +313,7 @@ class MainWindow(QWidget):
 
             while True:
                 try:
-                    line = await asyncio.wait_for(self.ser_reader.readline(), timeout=10.0)
+                    line = await asyncio.wait_for(self.ser_reader.readline(), timeout=30.0)
                     decoded = line.decode().strip()
                     log(f"[ARDUINO] {decoded}", self)
                     if "DONE" in decoded or "READY" in decoded:
@@ -331,19 +360,52 @@ class MainWindow(QWidget):
             log(f"[ROTATION] 목표 각도 설정됨: {Target_degree:.1f}도", self)
 
     async def start_rotation(self):
-            global angle, Target_degree
-            self.label_state.setText("상태: 회전중")
+        global angle, Target_degree
+        self.label_state.setText("상태: 회전중")
 
-            for _ in range(10):
-                await asyncio.sleep(0.1)
-                diR, stR = calculate_rotation(angle, Target_degree)
+        start_time = time.time()
 
-                if stR < 5:
-                    log(f"[ROTATION] COMPLETE: 오차 {abs(Target_degree - angle):.2f}도", self)
-                    self.label_state.setText("상태: 회전 완료")
-                    return
-                command = f"0,0,0,0,{diR},{stR}"
-                await self.send_serial_command(command)
+        while True:
+            if time.time() - start_time > 50:
+                self.label_state.setText("상태: 회전 제한시간 초과")
+                log("[ROTATION] 회전 제한시간 초과", self)
+                break
+
+            await asyncio.sleep(0.2)
+
+            ret, frame = self.cap.read()
+            if not ret:
+                continue
+
+            results = model(frame)
+            f1_center, wafer_center = None, None
+
+            for box in results[0].boxes.data:
+                x1, y1, x2, y2, conf, cls = box.tolist()
+                label = results[0].names[int(cls)]
+                cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                if label in ["P100", "P111"]:
+                    wafer_center = (cx, cy)
+                elif label == "F1":
+                    f1_center = (cx, cy)
+
+            if not f1_center or not wafer_center:
+                continue
+
+            angle = calculate_angle(f1_center, wafer_center)
+            diff = (Target_degree - angle + 540) % 360 - 180
+            angle_error = abs(diff)
+
+            self.label_angle.setText(f"회전각: {angle:.2f}°")
+            self.label_angle_error.setText(f"각도오차: {angle_error:.2f}°")
+
+            if angle_error <= 5.0:
+                log(f"[ROTATION] COMPLETE: 오차 {angle_error:.2f}도", self)
+                self.label_state.setText("상태: 회전 완료")
+                return
+
+            diR, stR = calculate_rotation(angle, Target_degree)
+            await self.send_serial_command(f"0,0,0,0,{diR},{stR}")
 
     async def auto_align_loop(self):
         global auto_mode, send_enabled, home_mode, force_send
@@ -415,22 +477,34 @@ class MainWindow(QWidget):
         last_sent_command = ""
 
     def update_frame(self):
-        global confirmed_center, stable_count
+        global confirmed_center, stable_count, angle
+
         if not self.serial_ready:
             return
 
         ret, frame = self.cap.read()
         if not ret:
+            if not self.warned_once:
+                log("[CAMERA] 프레임 수신 실패", self)
+                self.warned_once = True
             return
 
-
         display = frame.copy()
-        results = model(display)
-        wafer_type_override = None
-# --- draw_yolo_boxes() 호출 전 F1/F2 존재 여부 판단
+       
+        results = model(display, conf=0.1)  # ★ confidence 낮추기
+        for box in results[0].boxes.data:
+            x1, y1, x2, y2, conf, cls = box.tolist()
+            label = results[0].names[int(cls)]
+            print(f"[YOLO] {label} - conf: {conf:.2f}")
+            
+        for box in results[0].boxes.data:
+            x1, y1, x2, y2, conf, cls = box.tolist()
+            class_name = results[0].names[int(cls)]
+            print(f"Detected: {class_name}, conf: {conf:.2f}")
+
+        # --- Wafer type 결정 ---
         has_f1 = False
         has_f2 = False
-
         for box in results[0].boxes.data:
             _, _, _, _, _, cls = box.tolist()
             label = results[0].names[int(cls)]
@@ -439,16 +513,19 @@ class MainWindow(QWidget):
             elif label == "F2":
                 has_f2 = True
 
-        draw_yolo_boxes(display, results, self, wafer_type_override)
-        print("[YOLO DETECTED]", [results[0].names[int(cls)] for *_, cls in results[0].boxes.data.tolist()])
-        print("[CLASSES]", results[0].names)
+        # --- wafer_type_override 결정 (P100 or P111)
+        wafer_type = None
+        if has_f1 and has_f2:
+            wafer_type = "P100"
+        elif has_f1:
+            wafer_type = "P111"
 
+        draw_yolo_boxes(display, results, self, wafer_type)
 
- # ---- F1/F2 중심좌표 계산 (루프 안에서)
+        # --- 중심 좌표 추출
         wafer_center = None
         f1_center = None
         f2_center = None
-
         for box in results[0].boxes.data:
             x1, y1, x2, y2, conf, cls = box.tolist()
             label = results[0].names[int(cls)]
@@ -461,16 +538,21 @@ class MainWindow(QWidget):
             elif label == "F2":
                 f2_center = (cx, cy)
 
-        # ---- 🔧 루프 바깥에서 시각화 처리
-        if has_f1 and has_f2 and f1_center and f2_center:
-            angle_f1f2 = calculate_angle(f1_center, f2_center)
-            angle_text = f"{angle_f1f2:.2f}°"
-            text_pos = (f2_center[0] + 10, f2_center[1] - 10)
-            cv2.putText(display, angle_text, text_pos, FONT, FONT_SCALE, (0, 255, 255), FONT_THICKNESS)
-            cv2.line(display, f1_center, f2_center, (255, 0, 0), 2)
-            cv2.circle(display, f1_center, 5, (0, 255, 0), -1)
-            cv2.circle(display, f2_center, 5, (0, 0, 255), -1)
+        # --- 각도 계산 및 시각화
+        if f1_center and wafer_center:
+            angle = calculate_angle(wafer_center, f1_center)  # 중심 → F1 방향
+            angle_text = f"{angle:.2f}°"
+            self.label_angle.setText(f"회전각: {angle:.2f}°")
 
+            diff = (Target_degree - angle + 540) % 360 - 180
+            angle_error = abs(diff)
+            self.label_angle_error.setText(f"각도오차: {angle_error:.2f}°")
+
+
+            cv2.putText(display, angle_text, (f1_center[0] + 10, f1_center[1] - 10), FONT, FONT_SCALE, (0, 255, 255), FONT_THICKNESS)
+            
+        
+        # --- 중심 탐지: yellow circle 우선, fallback으로 YOLO center
         center = detect_best_yellow_circle(display) or detect_yolo_center(display)
         if center:
             confirmed_center = center
@@ -485,22 +567,23 @@ class MainWindow(QWidget):
                     asyncio.create_task(self.send_serial_command("STOP"))
             else:
                 stable_count = 0
+
             if send_enabled and stable_count < STABLE_REQUIRED:
-                
                 asyncio.create_task(self.send_serial_command(command))
 
-            if confirmed_center:
-                accuracy = calculate_accuracy_px(Target_Point, confirmed_center)
-                self.label_accuracy.setText(f"정확도: {accuracy}%")
+            accuracy = calculate_accuracy_px(Target_Point, confirmed_center)
+            self.label_accuracy.setText(f"정확도: {accuracy}%")
         else:
             self.label_coords.setText("남은좌표: (0, 0)")
             self.label_accuracy.setText("정확도: 0%")
 
+        # --- 타겟, 센터 시각화
         cv2.circle(display, tuple(Target_Point), 5, (0, 0, 255), -1)
         if confirmed_center:
             cv2.circle(display, confirmed_center, 5, (0, 255, 0), -1)
             cv2.line(display, tuple(Target_Point), confirmed_center, (255, 0, 0), 2)
 
+        # --- 화면 출력
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
@@ -517,7 +600,7 @@ class MainWindow(QWidget):
 
         zoom_crop = display[y1:y2, x1:x2]
 
-        zoomed = cv2.resize(zoom_crop, (200, 200), interpolation=cv2.INTER_NEAREST)
+        zoomed = cv2.resize(zoom_crop, (100, 100), interpolation=cv2.INTER_NEAREST)
         zoomed_rgb = cv2.cvtColor(zoomed, cv2.COLOR_BGR2RGB)
         self.zoom_window.update_zoom(zoomed_rgb)
 
