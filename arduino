@@ -1,3 +1,5 @@
+// dix diy stx sty dir str
+
 #define DIR_X 2
 #define STEP_X 3
 #define EN_X 6
@@ -11,6 +13,7 @@
 #define EN_R 10
 
 #define STEP_DELAY 800  // 마이크로초 단위
+#define R_STEP_DELAY 8000 // rotation
 
 bool ready_for_command = false;
 String input = "";
@@ -91,7 +94,7 @@ void processCommand(String cmd) {
     delay(100);
     moveMotor(DIR_Y, STEP_Y, EN_Y, diy, sty);
     delay(100);
-    moveMotor(DIR_R, STEP_R, EN_R, dirR, stR);
+    R_moveMotor(DIR_R, STEP_R, EN_R, dirR, stR);
 
     Serial.println("DONE");
   } else {
@@ -114,115 +117,15 @@ void moveMotor(int dirPin, int stepPin, int enPin, bool direction, long steps) {
   digitalWrite(enPin, HIGH);
 }
 
-
-
-
-
-
-
-
-// 수정 아두이노
-
-#define DIR_X 2
-#define STEP_X 3
-#define EN_X 6
-
-#define DIR_Y 4
-#define STEP_Y 5
-#define EN_Y 7
-
-#define STEP_DELAY 800
-
-bool ready_for_command = false;
-String input = "";
-
-void setup() {
-  pinMode(DIR_X, OUTPUT);  pinMode(STEP_X, OUTPUT);  pinMode(EN_X, OUTPUT);
-  pinMode(DIR_Y, OUTPUT);  pinMode(STEP_Y, OUTPUT);  pinMode(EN_Y, OUTPUT);
-
-  digitalWrite(EN_X, HIGH);
-  digitalWrite(EN_Y, HIGH);
-
-  Serial.begin(9600);
-  delay(2000);
-  Serial.println("[Arduino] READY");
-  ready_for_command = true;
-}
-
-void loop() {
-  if (!ready_for_command) return;
-
-  while (Serial.available()) {
-    char c = Serial.read();
-    if (c == '\n') {
-      input.trim();
-      if (input.length() >= 7) {
-        ready_for_command = false;  // 🔒 명령 처리 진입
-        processCommand(input);
-        input = "";
-
-        // 🧹 시리얼 버퍼 완전 정리
-        while (Serial.available()) Serial.read();
-
-        ready_for_command = true;  // 🔓 다음 명령 대기
-      } else {
-        Serial.println("[Arduino] Invalid input (too short)");
-        input = "";
-      }
-    } else {
-      input += c;
-    }
-  }
-}
-
-void processCommand(String cmd) {
-  if (cmd == "HOME") {
-    Serial.println("[Arduino] HOMING triggered");
-    return;
-  }
-
-  int dix = -1, diy = -1;
-  long stx = 0, sty = 0;
-
-  int i1 = cmd.indexOf(',');
-  int i2 = cmd.indexOf(',', i1 + 1);
-  int i3 = cmd.indexOf(',', i2 + 1);
-
-  if (i1 > 0 && i2 > i1 && i3 > i2 && i3 < cmd.length() - 1) {
-    dix = cmd.substring(0, i1).toInt();
-    diy = cmd.substring(i1 + 1, i2).toInt();
-    stx = cmd.substring(i2 + 1, i3).toInt();
-    sty = cmd.substring(i3 + 1).toInt();
-
-    Serial.print("[Arduino] Received: ");
-    Serial.println(cmd);
-    Serial.print("[Arduino] Parsed: Xdir="); Serial.print(dix);
-    Serial.print(" Ydir="); Serial.print(diy);
-    Serial.print(" Xstep="); Serial.print(stx);
-    Serial.print(" Ystep="); Serial.println(sty);
-
-    moveMotor(DIR_X, STEP_X, EN_X, dix, stx);
-    delay(100);
-    moveMotor(DIR_Y, STEP_Y, EN_Y, diy, sty);
-    delay(100);
-
-    Serial.println("DONE");
-
-  } else {
-    Serial.print("[Arduino] Parse error: ");
-    Serial.println(cmd);
-  }
-}
-
-void moveMotor(int dirPin, int stepPin, int enPin, bool direction, long steps) {
+void R_moveMotor(int dirPin, int stepPin, int enPin, bool direction, long steps) {
   digitalWrite(enPin, LOW);
   digitalWrite(dirPin, direction);
 
   for (long i = 0; i < steps; i++) {
     digitalWrite(stepPin, HIGH);
-    delayMicroseconds(STEP_DELAY);
+    delayMicroseconds(R_STEP_DELAY);
     digitalWrite(stepPin, LOW);
-    delayMicroseconds(STEP_DELAY);
+    delayMicroseconds(R_STEP_DELAY);
   }
 
   digitalWrite(enPin, HIGH);
