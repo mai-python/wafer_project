@@ -45,7 +45,7 @@ TEXT_COLOR = (255, 255, 255)
 Target_degree = 0
 angle = 0
 
-DEGREE_TO_STEP = 0.2
+DEGREE_TO_STEP = 1
 MAX_ROTATION_STEP = 32000
 
 CLASS_COLORS = {
@@ -55,7 +55,8 @@ CLASS_COLORS = {
     'P111': (255, 0, 0),
 }
 
-model = YOLO("best/best.pt")
+model = YOLO("best/v8m640best.pt")
+#model = YOLO("/home/mai/Desktop/wafer_project/runs/detect/wafer_yolo_train2/weights/best.pt")
 
 confirmed_center = None
 send_enabled = False
@@ -162,8 +163,8 @@ def calculate_angle(pt1, pt2):
     return angle + 360 if angle < 0 else angle
 
 def calculate_rotation(current_angle, target_angle):
-    dR = (target_angle - current_angle +540) % 360-180
-    diR = 1 if dR > 0 else 0
+    dR = (target_angle - current_angle + 540) % 360 - 180
+    diR = 1  # 항상 시계방향
     stR = max(1, min(int(abs(dR) * DEGREE_TO_STEP), MAX_ROTATION_STEP))
     
     return diR, stR
@@ -363,14 +364,7 @@ class MainWindow(QWidget):
         global angle, Target_degree
         self.label_state.setText("상태: 회전중")
 
-        start_time = time.time()
-
         while True:
-            if time.time() - start_time > 50:
-                self.label_state.setText("상태: 회전 제한시간 초과")
-                log("[ROTATION] 회전 제한시간 초과", self)
-                break
-
             await asyncio.sleep(0.2)
 
             ret, frame = self.cap.read()
@@ -390,6 +384,7 @@ class MainWindow(QWidget):
                     f1_center = (cx, cy)
 
             if not f1_center or not wafer_center:
+                log("[DEBUG] 중심 좌표 감지 실패 → 회전 생략", self)
                 continue
 
             angle = calculate_angle(f1_center, wafer_center)
@@ -399,13 +394,22 @@ class MainWindow(QWidget):
             self.label_angle.setText(f"회전각: {angle:.2f}°")
             self.label_angle_error.setText(f"각도오차: {angle_error:.2f}°")
 
-            if angle_error <= 5.0:
-                log(f"[ROTATION] COMPLETE: 오차 {angle_error:.2f}도", self)
+            log(f"[DEBUG] angle={angle:.2f}, target={Target_degree:.2f}, error={angle_error:.2f}", self)
+
+            # --- 오차가 1도 이하일 경우 바로 STOP 전송 ---
+            if angle_error <= 1.0:
+                log(f"[FORCE STOP] 오차 {angle_error:.2f}° → STOP 전송", self)
                 self.label_state.setText("상태: 회전 완료")
+                await self.send_serial_command("STOP")
                 return
 
             diR, stR = calculate_rotation(angle, Target_degree)
-            await self.send_serial_command(f"0,0,0,0,{diR},{stR}")
+            command = f"0,0,0,0,{diR},{stR}"
+            log(f"[DEBUG] Send Command: {command}", self)
+            await self.send_serial_command(command)
+
+
+
 
     async def auto_align_loop(self):
         global auto_mode, send_enabled, home_mode, force_send
@@ -540,7 +544,7 @@ class MainWindow(QWidget):
 
         # --- 각도 계산 및 시각화
         if f1_center and wafer_center:
-            angle = calculate_angle(wafer_center, f1_center)  # 중심 → F1 방향
+            angle = calculate_angle(f1_center, wafer_center)  # 중심 → F1 방향
             angle_text = f"{angle:.2f}°"
             self.label_angle.setText(f"회전각: {angle:.2f}°")
 
