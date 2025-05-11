@@ -6,7 +6,7 @@ import torch
 import serial_asyncio
 from PyQt5.QtWidgets import (
     QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy,
-    QPushButton, QTextEdit, QMessageBox,
+    QPushButton, QTextEdit, QMessageBox, QTabWidget
 )
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtCore import Qt, QTimer
@@ -18,7 +18,6 @@ import gc
 
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "0"
 
-#변수
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
@@ -76,7 +75,6 @@ fixed_f1_box = None
 fixed_f2_box = None
 
 corrected_box = []
-
 
 def show_warning(self, title, message):
     warning = QMessageBox(self)
@@ -139,7 +137,7 @@ def draw_yolo_boxes(frame, results, window=None, override_type=None):
         class_name = results[0].names[int(cls)]
 
         if class_name not in ["F1", "F2"]:
-            continue 
+            continue
 
         color = CLASS_COLORS.get(class_name, (0, 255, 0))
         cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
@@ -166,7 +164,7 @@ def calculate_angle(pt1, pt2):
 
 def calculate_rotation(current_angle, target_angle):
     dR = (target_angle - current_angle + 540) % 360 - 180
-    diR = 1  # 항상 시계방향
+    diR = 1
     stR = max(1, min(int(abs(dR) * DEGREE_TO_STEP), MAX_ROTATION_STEP))
     
     return diR, stR
@@ -199,67 +197,103 @@ class MainWindow(QWidget):
         self.cap.set(4, FRAME_HEIGHT)
 
         self.log_window = LogWindow()
-        self.log_window.show()
 
         self.image_label = QLabel()
         self.image_label.setScaledContents(True)
         self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
+        self.label_wafer_type = QLabel("Wafer Type: -")
         self.label_coords = QLabel("남은좌표: (0, 0)")
         self.label_accuracy = QLabel("정확도: 0%")
         self.label_state = QLabel("상태: 대기")
         self.label_angle = QLabel("회전각: 0.00°")
         self.label_angle_error = QLabel("각도오차: 0.00°")
+        for label in [self.label_wafer_type, self.label_coords, self.label_accuracy, self.label_state, self.label_angle, self.label_angle_error]:
+            label.setStyleSheet("font-size: 20px; padding: 4px;")
 
-        for label in [self.label_coords, self.label_accuracy, self.label_state, self.label_angle, self.label_angle_error]:
-            label.setStyleSheet("font-size: 14px; padding: 4px;")
+        self.status_layout = QVBoxLayout()
+        for label in [self.label_wafer_type, self.label_coords, self.label_accuracy, self.label_state, self.label_angle, self.label_angle_error]:
+            self.status_layout.addWidget(label)
 
-        status_layout = QHBoxLayout()
-        status_layout.addWidget(self.label_coords)
-        status_layout.addWidget(self.label_accuracy)
-        status_layout.addWidget(self.label_state)
-        status_layout.addWidget(self.label_angle)
-        status_layout.addWidget(self.label_angle_error)
+        status_widget = QWidget()
+        status_widget.setLayout(self.status_layout)
+        status_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-    
+        self.tabs = QTabWidget()
+        self.tabs.setTabPosition(QTabWidget.North)
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
+        self.align_tab = QWidget()
+        self.angle_tab = QWidget()
+        self.advanced_tab = QWidget()
+
+        self.tabs.addTab(self.align_tab, "Align")
+        self.tabs.addTab(self.angle_tab, "Angle")
+        self.tabs.addTab(self.advanced_tab, "Advanced")
+
+        align_layout = QVBoxLayout()
         self.s_button = QPushButton("ALIGN")
         self.m_button = QPushButton("MANUAL")
         self.u_button = QPushButton("HOMING")
-        self.a_button = QPushButton("ANGLE")
-        self.r_button = QPushButton("ROTATION")
-        self.t_button = QPushButton("AUTO")
-
+        self.s_button.setFixedSize(500, 100)
+        self.m_button.setFixedSize(500, 100)
+        self.u_button.setFixedSize(500, 100)
+        self.s_button.setStyleSheet("font-size: 25px;")  
+        self.m_button.setStyleSheet("font-size: 25px;")
+        self.u_button.setStyleSheet("font-size: 25px;")
         self.s_button.clicked.connect(self.toggle_send)
         self.m_button.clicked.connect(self.toggle_target_mode)
         self.u_button.clicked.connect(self.move_home)
+        align_layout.addWidget(self.s_button)
+        align_layout.addWidget(self.m_button)
+        align_layout.addWidget(self.u_button)
+        self.align_tab.setLayout(align_layout)
+
+        align_layout.setStretchFactor(self.s_button, 1)
+        align_layout.setStretchFactor(self.m_button, 1)
+
+        angle_layout = QVBoxLayout()
+        self.a_button = QPushButton("ANGLE")
+        self.r_button = QPushButton("ROTATION")
+        self.a_button.setFixedSize(500, 100)
+        self.r_button.setFixedSize(500, 100)
+        self.a_button.setStyleSheet("font-size: 25px;")
+        self.r_button.setStyleSheet("font-size: 25px;")
         self.a_button.clicked.connect(self.set_target_degree)
         self.r_button.clicked.connect(lambda: asyncio.create_task(self.start_rotation()))
-        self.t_button.clicked.connect(self.toggle_auto_mode)
+        angle_layout.addWidget(self.a_button)
+        angle_layout.addWidget(self.r_button)
+        self.angle_tab.setLayout(angle_layout)
 
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.s_button)
-        button_layout.addWidget(self.m_button)
-        button_layout.addWidget(self.u_button)
-        button_layout.addWidget(self.a_button)
-        button_layout.addWidget(self.r_button)
-        button_layout.addWidget(self.t_button)
+        advanced_layout = QVBoxLayout()
+        self.t_button = QPushButton("AUTO")
+        self.t_button.setFixedSize(500, 100)
+        self.t_button.setStyleSheet("font-size: 25px;")
+        self.t_button.clicked.connect(self.toggle_auto_mode)
+        advanced_layout.addWidget(self.t_button)
+        self.advanced_tab.setLayout(advanced_layout)
+
+        tab_and_status_layout = QHBoxLayout()
+        tab_and_status_layout.addWidget(self.tabs)
+        tab_and_status_layout.addWidget(status_widget)
+        tab_and_status_layout.setStretch(0, 3)
+        tab_and_status_layout.setStretch(1, 2)
 
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setText("청운대학교 캡스톤디자인")
-        self.log_box.setStyleSheet("font-size: 25px;")
+        self.log_box.setText("청운대학교 캡스톤디자인\nF1: Help F2: Zoom_window F3: Log_window F5: Reload_Model")
+        self.log_box.setStyleSheet("font-size: 18px;")
 
-        layout = QVBoxLayout()
-        layout.addWidget(self.image_label)
-        layout.addLayout(status_layout)
-        layout.addLayout(button_layout)
-        layout.addWidget(self.log_box)
-        self.setLayout(layout)
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(self.image_label)
+        main_layout.addLayout(tab_and_status_layout)
+        main_layout.addWidget(self.log_box)
+        self.setLayout(main_layout)
 
         self.ser_reader = None
         self.ser_writer = None
         self.serial_ready = False
+
         self.reset_timer = QTimer()
         self.reset_timer.setSingleShot(True)
         self.reset_timer.timeout.connect(self.set_waiting)
@@ -286,7 +320,6 @@ class MainWindow(QWidget):
                 log(f"[ERR] Error: {e}")
         QApplication.instance().quit()
         event.accept()
-
 
     def set_waiting(self):
         self.label_state.setText("상태: 정렬대기")
@@ -346,7 +379,6 @@ class MainWindow(QWidget):
                 log("[ROTATION] 회전 완료 - STOP 전송", self)
                 self.label_state.setText("상태: 회전 완료")
                 self.reset_timer.start(5000)
-
 
     def toggle_send(self):
         global send_enabled
@@ -512,7 +544,6 @@ class MainWindow(QWidget):
             last_sent_command = ""
             force_send = True
             setting_target_mode = False
-
             send_enabled = False
             self.label_state.setText("상태: 대기")
 
@@ -534,7 +565,7 @@ class MainWindow(QWidget):
                 log("[CAMERA] 프레임 수신 실패", self)
                 self.warned_once = True
             return
-
+        
         display = frame.copy()
 
         results = model(display, conf=0.4)
@@ -579,7 +610,7 @@ class MainWindow(QWidget):
                 f2_center = (cx, cy)
 
         if f1_center and wafer_center:
-            angle = calculate_angle(f1_center, wafer_center)  # 중심 → F1 방향
+            angle = calculate_angle(f1_center, wafer_center) 
             angle_text = f"{angle:.2f}°"
             self.label_angle.setText(f"회전각: {angle:.2f}°")
 
@@ -618,6 +649,15 @@ class MainWindow(QWidget):
             if confirmed_center:
                 cv2.circle(display, confirmed_center, 5, (0, 255, 0), -1)
                 cv2.line(display, tuple(Target_Point), confirmed_center, (255, 0, 0), 2)
+        wafer_type = None
+        if has_f1 and has_f2:
+            wafer_type = "P100"
+        elif has_f1:
+            wafer_type = "P111"
+        else:
+            wafer_type = "-"
+
+        self.label_wafer_type.setText(f"Wafer Type: {wafer_type}")
 
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
@@ -645,13 +685,13 @@ class MainWindow(QWidget):
         key = event.key()
         if key == Qt.Key_F1:
             self.show_help_dialog()
-        elif key == Qt.Key_F3:
-            if self.log_window.isVisible():
-                self.log_window.hide()
-            else:
-                self.log_window.show()
         elif key == Qt.Key_F2:
             self.toggle_zoom_window()
+        elif key == Qt.Key_F3:
+            if self.log_window.isVisible():
+                self.log_window.hide()  
+            else:
+                self.log_window.show()  
         elif key == Qt.Key_F5:
             self.reload_yolo_model()
 
@@ -659,7 +699,7 @@ class MainWindow(QWidget):
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Information)
         msg.setWindowTitle("도움말")
-        msg.setText("Wafer Aligner\n\n정렬시작: 정렬을 시작합니다\n목표설정: 마우스로 타겟 설정\n원위치: 초기 위치로 복귀\n리셋: 상태 초기화")
+        msg.setText("Wafer Aligner\n\nALIGN: 정렬을 시작합니다\nMANUAL: 마우스로 타겟 설정\nHOMING: 초기 위치로 복귀\nANGLE: \nROTATION: \nAUTO: ")
         msg.exec_()
 
     def toggle_zoom_window(self):
