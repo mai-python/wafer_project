@@ -2,7 +2,7 @@ import sys
 import cv2
 import numpy as np
 import asyncio
-import time
+import torch
 import serial_asyncio
 from PyQt5.QtWidgets import (
     QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy,
@@ -14,6 +14,7 @@ from ultralytics import YOLO
 from qasync import QEventLoop
 import os
 from PyQt5.QtWidgets import QInputDialog
+import gc
 
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "0"
 
@@ -55,8 +56,7 @@ CLASS_COLORS = {
     'P111': (255, 0, 0),
 }
 
-model = YOLO("best/v8m640best.pt")
-#model = YOLO("/home/mai/Desktop/wafer_project/runs/detect/wafer_yolo_train2/weights/best.pt")
+model = YOLO("best/v8m960best.pt")
 
 confirmed_center = None
 send_enabled = False
@@ -76,6 +76,7 @@ fixed_f1_box = None
 fixed_f2_box = None
 
 corrected_box = []
+
 
 def show_warning(self, title, message):
     warning = QMessageBox(self)
@@ -102,7 +103,8 @@ def calculate_accuracy_px(target_point, center_point):
 
 def log(msg, window):
     print(msg)
-    window.log_box.append(msg)
+    if hasattr(window, 'log_window') and window.log_window:
+        window.log_window.append_log(msg)
 
 def compute_roundness(cnt):
     area = cv2.contourArea(cnt)
@@ -137,7 +139,7 @@ def draw_yolo_boxes(frame, results, window=None, override_type=None):
         class_name = results[0].names[int(cls)]
 
         if class_name not in ["F1", "F2"]:
-            continue  # F1, F2만 시각화
+            continue 
 
         color = CLASS_COLORS.get(class_name, (0, 255, 0))
         cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
@@ -188,13 +190,16 @@ class MainWindow(QWidget):
         self.setWindowTitle("Wafer_Aligner")
         self.setMinimumSize(800, 600)
 
+        self.rotation_active = False
         self.warned_once = False
-
-        self.zoom_window = ZoomWindow()
+        self.zoom_window = None
 
         self.cap = cv2.VideoCapture(CAMERA_INDEX)
         self.cap.set(3, FRAME_WIDTH)
         self.cap.set(4, FRAME_HEIGHT)
+
+        self.log_window = LogWindow()
+        self.log_window.show()
 
         self.image_label = QLabel()
         self.image_label.setScaledContents(True)
@@ -242,6 +247,8 @@ class MainWindow(QWidget):
 
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
+        self.log_box.setText("청운대학교 캡스톤디자인")
+        self.log_box.setStyleSheet("font-size: 25px;")
 
         layout = QVBoxLayout()
         layout.addWidget(self.image_label)
@@ -305,6 +312,9 @@ class MainWindow(QWidget):
         sending_command = True
         awaiting_done = True
         try:
+            if command == "STOP":
+                command = "0,0,0,0,0,0" 
+            
             self.ser_writer.write((command + "\n").encode())
             await self.ser_writer.drain()
             log(f"[SEND] {command}", self)
@@ -321,6 +331,7 @@ class MainWindow(QWidget):
                         break
                 except asyncio.TimeoutError:
                     log("[TIMEOUT] No DONE received", self)
+                    self.label_state.setText("상태: 정렬대기")
                     break
         except Exception as e:
             log(f"[ERR] Serial: {e}", self)
@@ -332,7 +343,10 @@ class MainWindow(QWidget):
                 home_mode = False
                 send_enabled = False
             else:
+                log("[ROTATION] 회전 완료 - STOP 전송", self)
+                self.label_state.setText("상태: 회전 완료")
                 self.reset_timer.start(5000)
+
 
     def toggle_send(self):
         global send_enabled
@@ -362,6 +376,7 @@ class MainWindow(QWidget):
 
     async def start_rotation(self):
         global angle, Target_degree
+        self.rotation_active = True
         self.label_state.setText("상태: 회전중")
 
         while True:
@@ -396,20 +411,47 @@ class MainWindow(QWidget):
 
             log(f"[DEBUG] angle={angle:.2f}, target={Target_degree:.2f}, error={angle_error:.2f}", self)
 
-            # --- 오차가 1도 이하일 경우 바로 STOP 전송 ---
-            if angle_error <= 1.0:
+            if angle_error < 1: 
                 log(f"[FORCE STOP] 오차 {angle_error:.2f}° → STOP 전송", self)
                 self.label_state.setText("상태: 회전 완료")
                 await self.send_serial_command("STOP")
-                return
+                self.rotation_active = False
+                self.update_points_after_rotation(frame)
+                break  
+            else:
+                diR, stR = calculate_rotation(angle, Target_degree)
+                command = f"0,0,0,0,{diR},{stR}"
+                log(f"[DEBUG] Send Command: {command}", self)
+                await self.send_serial_command(command)  
 
-            diR, stR = calculate_rotation(angle, Target_degree)
-            command = f"0,0,0,0,{diR},{stR}"
-            log(f"[DEBUG] Send Command: {command}", self)
-            await self.send_serial_command(command)
+    def update_points_after_rotation(self, frame):
+        results = model(frame)
+        wafer_center = None
+        f1_center = None
+        for box in results[0].boxes.data:
+            x1, y1, x2, y2, conf, cls = box.tolist()
+            label = results[0].names[int(cls)]
+            cx = int((x1 + x2) / 2)
+            cy = int((y1 + y2) / 2)
+            if label in ["P100", "P111"]:
+                wafer_center = (cx, cy)
+            elif label == "F1":
+                f1_center = (cx, cy)
 
+        if wafer_center:
+            self.confirmed_center = wafer_center 
+            log(f"[UPDATED POINTS] confirmed_center: {self.confirmed_center}", self)
+            self.label_state.setText("상태: 정렬대기")  
 
-
+    def reload_yolo_model(self):
+        global model
+        log("[YOLO] reload model...", self)
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        model = YOLO("best/v8m960best.pt")
+        log("[YOLO]complete reload model", self)
 
     async def auto_align_loop(self):
         global auto_mode, send_enabled, home_mode, force_send
@@ -494,19 +536,15 @@ class MainWindow(QWidget):
             return
 
         display = frame.copy()
-       
-        results = model(display, conf=0.1)  # ★ confidence 낮추기
-        for box in results[0].boxes.data:
-            x1, y1, x2, y2, conf, cls = box.tolist()
-            label = results[0].names[int(cls)]
-            print(f"[YOLO] {label} - conf: {conf:.2f}")
-            
-        for box in results[0].boxes.data:
-            x1, y1, x2, y2, conf, cls = box.tolist()
-            class_name = results[0].names[int(cls)]
-            print(f"Detected: {class_name}, conf: {conf:.2f}")
 
-        # --- Wafer type 결정 ---
+        results = model(display, conf=0.4)
+
+        if not self.rotation_active: 
+            for box in results[0].boxes.data:
+                x1, y1, x2, y2, conf, cls = box.tolist()
+                label = results[0].names[int(cls)]
+                print(f"Detected: {label}, conf: {conf:.2f}")
+
         has_f1 = False
         has_f2 = False
         for box in results[0].boxes.data:
@@ -517,7 +555,6 @@ class MainWindow(QWidget):
             elif label == "F2":
                 has_f2 = True
 
-        # --- wafer_type_override 결정 (P100 or P111)
         wafer_type = None
         if has_f1 and has_f2:
             wafer_type = "P100"
@@ -526,7 +563,6 @@ class MainWindow(QWidget):
 
         draw_yolo_boxes(display, results, self, wafer_type)
 
-        # --- 중심 좌표 추출
         wafer_center = None
         f1_center = None
         f2_center = None
@@ -542,7 +578,6 @@ class MainWindow(QWidget):
             elif label == "F2":
                 f2_center = (cx, cy)
 
-        # --- 각도 계산 및 시각화
         if f1_center and wafer_center:
             angle = calculate_angle(f1_center, wafer_center)  # 중심 → F1 방향
             angle_text = f"{angle:.2f}°"
@@ -552,11 +587,8 @@ class MainWindow(QWidget):
             angle_error = abs(diff)
             self.label_angle_error.setText(f"각도오차: {angle_error:.2f}°")
 
-
             cv2.putText(display, angle_text, (f1_center[0] + 10, f1_center[1] - 10), FONT, FONT_SCALE, (0, 255, 255), FONT_THICKNESS)
-            
-        
-        # --- 중심 탐지: yellow circle 우선, fallback으로 YOLO center
+
         center = detect_best_yellow_circle(display) or detect_yolo_center(display)
         if center:
             confirmed_center = center
@@ -581,13 +613,12 @@ class MainWindow(QWidget):
             self.label_coords.setText("남은좌표: (0, 0)")
             self.label_accuracy.setText("정확도: 0%")
 
-        # --- 타겟, 센터 시각화
-        cv2.circle(display, tuple(Target_Point), 5, (0, 0, 255), -1)
-        if confirmed_center:
-            cv2.circle(display, confirmed_center, 5, (0, 255, 0), -1)
-            cv2.line(display, tuple(Target_Point), confirmed_center, (255, 0, 0), 2)
+        if not self.rotation_active:  
+            cv2.circle(display, tuple(Target_Point), 5, (0, 0, 255), -1)
+            if confirmed_center:
+                cv2.circle(display, confirmed_center, 5, (0, 255, 0), -1)
+                cv2.line(display, tuple(Target_Point), confirmed_center, (255, 0, 0), 2)
 
-        # --- 화면 출력
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
@@ -604,14 +635,25 @@ class MainWindow(QWidget):
 
         zoom_crop = display[y1:y2, x1:x2]
 
-        zoomed = cv2.resize(zoom_crop, (100, 100), interpolation=cv2.INTER_NEAREST)
+        zoomed = cv2.resize(zoom_crop, (400, 300), interpolation=cv2.INTER_NEAREST)
         zoomed_rgb = cv2.cvtColor(zoomed, cv2.COLOR_BGR2RGB)
-        self.zoom_window.update_zoom(zoomed_rgb)
+        
+        if hasattr(self, 'zoom_window') and self.zoom_window:
+            self.zoom_window.update_zoom(zoomed_rgb)
 
     def keyPressEvent(self, event):
         key = event.key()
         if key == Qt.Key_F1:
             self.show_help_dialog()
+        elif key == Qt.Key_F3:
+            if self.log_window.isVisible():
+                self.log_window.hide()
+            else:
+                self.log_window.show()
+        elif key == Qt.Key_F2:
+            self.toggle_zoom_window()
+        elif key == Qt.Key_F5:
+            self.reload_yolo_model()
 
     def show_help_dialog(self):
         msg = QMessageBox(self)
@@ -620,11 +662,18 @@ class MainWindow(QWidget):
         msg.setText("Wafer Aligner\n\n정렬시작: 정렬을 시작합니다\n목표설정: 마우스로 타겟 설정\n원위치: 초기 위치로 복귀\n리셋: 상태 초기화")
         msg.exec_()
 
+    def toggle_zoom_window(self):
+        if self.zoom_window is None:
+            self.zoom_window = ZoomWindow()
+        else:
+            self.zoom_window.show()
+            self.zoom_window.raise_()
+
 class ZoomWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ZOOM_POINT")
-        self.setFixedSize(500, 400)
+        self.setFixedSize(600, 400)
 
         self.zoom_label = QLabel()
         self.zoom_label.setScaledContents(True)
@@ -638,6 +687,21 @@ class ZoomWindow(QWidget):
         h, w, ch = image.shape
         qimg = QImage(image.data, w, h, ch * w, QImage.Format_RGB888)
         self.zoom_label.setPixmap(QPixmap.fromImage(qimg))
+
+class LogWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("LOG")
+        self.setGeometry(200, 200, 600, 400)
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+        layout = QVBoxLayout()
+        layout.addWidget(self.text_edit)
+        self.setLayout(layout)
+
+    def append_log(self, msg):
+        self.text_edit.append(msg)
+        self.text_edit.verticalScrollBar().setValue(self.text_edit.verticalScrollBar().maximum())
 
 def main():
     app = QApplication(sys.argv)
