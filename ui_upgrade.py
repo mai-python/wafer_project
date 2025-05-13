@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import QSplashScreen
 from PyQt5.QtGui import QPixmap
 import time
 from PyQt5.QtWidgets import QFrame
+from PyQt5.QtWidgets import QGridLayout
 
 model = YOLO("C:\\Users\\Mai\\Desktop\\wafer_project\\best.pt") # best.pt 주소 확인
 ##########################################수정금지#########################################################
@@ -178,7 +179,7 @@ def calculate_steps(from_point, to_point):
     command = f"{dix},{diy},{dx_steps},{dy_steps},0,0"
     return dx, dy, dx_steps, dy_steps, command
 ##########################################수정금지#########################################################
-class MainWindow(QMainWindow): 
+class MainWindow(QMainWindow):
     def __init__(self, loop):
         super().__init__()
         self.loop = loop
@@ -186,50 +187,65 @@ class MainWindow(QMainWindow):
         self.setFixedSize(FRAME_WIDTH, FRAME_HEIGHT + 200 + self.menuBar().height())
         self.setMouseTracking(True)
         self.show()
+
+        # 메뉴바
         menubar = self.menuBar()
         file_menu = menubar.addMenu("FILE")
         exit_action = QAction("EXIT", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
-        align_menu = menubar.addMenu("FUNCTION")
-        align_menu.addAction(QAction("ALIGN", self, triggered=self.show_align_tab))
-        align_menu.addAction(QAction("MANUAL", self, triggered=self.toggle_target_mode))
-        align_menu.addAction(QAction("HOMING", self, triggered=self.move_home))
-        auto_menu = menubar.addMenu("ADVANCED")
-        auto_menu.addAction(QAction("AUTO_MODE", self, triggered=self.toggle_auto_mode))
-        tool_menu = menubar.addMenu("TOOLS")
+        function_menu = menubar.addMenu("Function")
+        function_menu.addAction(QAction("Align",     self, triggered=self.show_align_tab))
+        function_menu.addAction(QAction("Rotation",      self, triggered=self.show_angle_tab))
+        function_menu.addAction(QAction("Advanced", self, triggered=self.show_advanced_tab))
+
+        tool_menu = menubar.addMenu("Tool")
         tool_menu.addAction(QAction("RELOAD_MODE_YOLO", self, triggered=self.reload_yolo_model))
-        help_menu = menubar.addMenu("HELPS")
+        help_menu = menubar.addMenu("Help")
         help_menu.addAction(QAction("SHOW_HELPS", self, triggered=self.show_help_dialog))
+
+
         self.cap = cv2.VideoCapture(CAMERA_INDEX)
         self.cap.set(3, FRAME_WIDTH)
         self.cap.set(4, FRAME_HEIGHT)
         self.zoom_window = None
-        self.log_window = LogWindow()
+        self.log_window  = LogWindow()
         self.rotation_active = False
-        self.warned_once = False
+        self.warned_once     = False
         self.image_label = QLabel()
         self.image_label.setScaledContents(True)
         self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.image_label.setFixedSize(FRAME_WIDTH, FRAME_HEIGHT)
-        self.label_wafer_type = QLabel("Wafer Type: -")
-        self.label_coords = QLabel("Offset: (0, 0)")
-        self.label_accuracy = QLabel("Accuracy: 0%")
-        self.label_state = QLabel("Status: Standby")
-        self.label_angle = QLabel("Angle: 0.00°")
-        self.label_angle_error = QLabel("Angle_Err: 0.00°")
-        for label in [self.label_wafer_type, self.label_coords, self.label_accuracy, self.label_state, self.label_angle, self.label_angle_error]:
-            label.setStyleSheet("font-size: 15px; padding: 10px;")
-        status_layout = QVBoxLayout()
+        self.label_wafer_type    = QLabel("Wafer Type: -")
+        self.label_coords        = QLabel("Offset: (0, 0)")
+        self.label_accuracy      = QLabel("Accuracy: 0%")
+        self.label_state         = QLabel("Status: Standby")
+        self.label_angle         = QLabel("Angle: 0.00°")
+        self.label_angle_error   = QLabel("Angle_Err: 0.00°")
+        for lbl in [self.label_wafer_type, self.label_coords, self.label_accuracy,
+                    self.label_state, self.label_angle, self.label_angle_error]:
+            lbl.setStyleSheet("font-size: 15px; padding: 10px;")
+        status_layout = QGridLayout()
         status_layout.setContentsMargins(0, 0, 0, 0)
         status_layout.setSpacing(0)
-        for label in [self.label_wafer_type, self.label_coords, self.label_accuracy, self.label_state, self.label_angle, self.label_angle_error]:
-            status_layout.addWidget(label)
+        status_layout.setColumnStretch(0, 1)
+        status_layout.setColumnStretch(1, 1)
+        status_layout.setColumnStretch(2, 1)
+        status_layout.addWidget(self.label_wafer_type,   0, 0, alignment=Qt.AlignCenter)
+        status_layout.addWidget(self.label_coords,       0, 1, alignment=Qt.AlignCenter)
+        status_layout.addWidget(self.label_accuracy,     0, 2, alignment=Qt.AlignCenter)
+        status_layout.addWidget(self.label_state,        1, 0, alignment=Qt.AlignCenter)
+        status_layout.addWidget(self.label_angle,        1, 1, alignment=Qt.AlignCenter)
+        status_layout.addWidget(self.label_angle_error,  1, 2, alignment=Qt.AlignCenter)
         status_widget = QWidget()
         status_widget.setLayout(status_layout)
+
+        #탭
         self.tabs = QTabWidget()
         self.tabs.hide()
         self.tabs.setTabPosition(QTabWidget.North)
+
+        #얼라인탭
         self.align_tab = QWidget()
         align_layout = QVBoxLayout()
         self.s_button = QPushButton("ALIGN")
@@ -245,70 +261,62 @@ class MainWindow(QMainWindow):
         for btn in [self.s_button, self.m_button, self.u_button]:
             align_layout.addWidget(btn)
         self.align_tab.setLayout(align_layout)
+
+        #로테이션탭
         self.angle_tab = QWidget()
         angle_layout = QVBoxLayout()
         self.a_button = QPushButton("ANGLE")
         self.r_button = QPushButton("ROTATION")
-        self.a_button.setFixedSize(100, 50)
-        self.r_button.setFixedSize(100, 50)
-        self.a_button.setStyleSheet("font-size: 25px;")
-        self.r_button.setStyleSheet("font-size: 25px;")
+        for btn in [self.a_button, self.r_button]:
+            btn.setFixedHeight(70)
+            btn.setFixedWidth(460)
+            btn.setStyleSheet("font-size: 20px; padding: 6px;")
         self.a_button.clicked.connect(self.set_target_degree)
         self.r_button.clicked.connect(lambda: asyncio.create_task(self.start_rotation()))
         angle_layout.addWidget(self.a_button)
         angle_layout.addWidget(self.r_button)
         self.angle_tab.setLayout(angle_layout)
+# Advanced 탭
         self.advanced_tab = QWidget()
         advanced_layout = QVBoxLayout()
         self.t_button = QPushButton("AUTO")
-        self.t_button.setFixedSize(200, 100)
-        self.t_button.setStyleSheet("font-size: 25px;")
+        for btn in [self.t_button]:
+            btn.setFixedHeight(70)
+            btn.setFixedWidth(460)
+            btn.setStyleSheet("font-size: 20px; padding: 6px;")
         self.t_button.clicked.connect(self.toggle_auto_mode)
         advanced_layout.addWidget(self.t_button)
         self.advanced_tab.setLayout(advanced_layout)
-        self.tabs.addTab(self.align_tab, "Align")
-        self.tabs.addTab(self.angle_tab, "Angle")
-        self.tabs.addTab(self.advanced_tab, "Advanced")
+
         self.tabs.setFixedWidth(500)
-    
         left_layout = QVBoxLayout()
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setContentsMargins(0,0,0,0)
         left_layout.setSpacing(0)
         left_layout.addWidget(self.tabs)
         left_layout.addStretch()
-
         left_panel = QWidget()
         left_panel.setLayout(left_layout)
-        left_panel.setFixedWidth(520) 
-        
-
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.setSpacing(0)
-        bottom_layout.setStretch(0, 1)  # left_panel
-        bottom_layout.setStretch(1, 1)  # center_spacer 
-        bottom_layout.setStretch(2, 1)  # status_widget
-
-        # 중앙 투명 패널 추가
+        left_panel.setFixedWidth(520)
         center_spacer = QWidget()
         center_spacer.setFixedWidth(300)
-        center_spacer.setStyleSheet("background-color: transparent;")  # 투명하게
-
-        # 기존 bottom_layout에 추가 순서 수정
+        center_spacer.setStyleSheet("background-color: transparent;")
+        bottom_layout = QHBoxLayout()
+        bottom_layout.setContentsMargins(0,0,0,0)
+        bottom_layout.setSpacing(0)
+        bottom_layout.setStretch(0,1)
+        bottom_layout.setStretch(1,1)
+        bottom_layout.setStretch(2,1)
         bottom_layout.addWidget(left_panel)
-        bottom_layout.addWidget(center_spacer)   # 중앙 Spacer
+        bottom_layout.addWidget(center_spacer)
         bottom_layout.addWidget(status_widget)
-
         bottom_widget = QWidget()
         bottom_widget.setLayout(bottom_layout)
         bottom_widget.setFixedHeight(200)
-
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setContentsMargins(0,0,0,0)
         main_layout.setSpacing(0)
         main_layout.addWidget(self.image_label)
         main_layout.addWidget(bottom_widget)
-
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
@@ -324,6 +332,24 @@ class MainWindow(QMainWindow):
         self.setMouseTracking(True)
         self.show()
 ############################################################################################################
+    def show_align_tab(self):
+        if self.tabs.indexOf(self.align_tab) == -1:
+            self.tabs.addTab(self.align_tab, "Align")
+        self.tabs.show()
+        self.tabs.setCurrentWidget(self.align_tab)
+
+    def show_angle_tab(self):
+        if self.tabs.indexOf(self.angle_tab) == -1:
+            self.tabs.addTab(self.angle_tab, "Angle")
+        self.tabs.show()
+        self.tabs.setCurrentWidget(self.angle_tab)
+
+    def show_advanced_tab(self):
+        if self.tabs.indexOf(self.advanced_tab) == -1:
+            self.tabs.addTab(self.advanced_tab, "Advanced")
+        self.tabs.show()
+        self.tabs.setCurrentWidget(self.advanced_tab)
+    
     def closeEvent(self, event):
         log("[SYSTEM] CLOSING", self)
         if hasattr(self, 'timer') and self.cap.isOpened():
@@ -399,9 +425,9 @@ class MainWindow(QMainWindow):
                 self.label_state.setText("Status: ROTATION_DONE")
                 self.reset_timer.start(5000)
 
-    def show_align_tab(self):
-        self.tabs.show()
-        self.tabs.setCurrentWidget(self.align_tab)
+    #def show_align_tab(self):
+     #   self.tabs.show()
+      #  self.tabs.setCurrentWidget(self.align_tab)
 
     def toggle_send(self):
         global send_enabled
