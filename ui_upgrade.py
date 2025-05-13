@@ -20,9 +20,10 @@ from PyQt5.QtWidgets import QAction
 from PyQt5.QtWidgets import QSplashScreen
 from PyQt5.QtGui import QPixmap
 import time
+from PyQt5.QtWidgets import QFrame
 
 model = YOLO("C:\\Users\\Mai\\Desktop\\wafer_project\\best.pt") # best.pt 주소 확인
-###수정금지#########################################################
+##########################################수정금지#########################################################
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "0"
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
@@ -71,7 +72,7 @@ has_f2 = False
 fixed_f1_box = None
 fixed_f2_box = None
 corrected_box = []
-####################
+#######################################################################################################
 def show_warning(self, title, message):
     warning = QMessageBox(self)
     warning.setIcon(QMessageBox.Warning)
@@ -176,61 +177,41 @@ def calculate_steps(from_point, to_point):
     diy = 1 if dy > 0 else 0
     command = f"{dix},{diy},{dx_steps},{dy_steps},0,0"
     return dx, dy, dx_steps, dy_steps, command
-##############수정금지#################
+##########################################수정금지#########################################################
 class MainWindow(QMainWindow): 
     def __init__(self, loop):
         super().__init__()
         self.loop = loop
         self.setWindowTitle("Wafer_Aligner")
-        self.setMinimumSize(800, 600)
-        
+        self.setFixedSize(FRAME_WIDTH, FRAME_HEIGHT + 200 + self.menuBar().height())
+        self.setMouseTracking(True)
+        self.show()
         menubar = self.menuBar()
-
         file_menu = menubar.addMenu("FILE")
         exit_action = QAction("EXIT", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
-
         align_menu = menubar.addMenu("FUNCTION")
-        align_action = QAction("ALIGN", self)
-        align_action.triggered.connect(self.show_align_tab)
-        align_manual = QAction("MANUAL", self)
-        align_manual.triggered.connect(self.toggle_target_mode)
-        align_home = QAction("HOMING", self)
-        align_home.triggered.connect(self.move_home)
-        align_menu.addAction(align_action)
-        align_menu.addAction(align_manual)
-        align_menu.addAction(align_home)
-
+        align_menu.addAction(QAction("ALIGN", self, triggered=self.show_align_tab))
+        align_menu.addAction(QAction("MANUAL", self, triggered=self.toggle_target_mode))
+        align_menu.addAction(QAction("HOMING", self, triggered=self.move_home))
         auto_menu = menubar.addMenu("ADVANCED")
-        auto_action = QAction("AUTO_MODE", self)
-        auto_action.triggered.connect(self.toggle_auto_mode)
-        auto_menu.addAction(auto_action)
-
+        auto_menu.addAction(QAction("AUTO_MODE", self, triggered=self.toggle_auto_mode))
         tool_menu = menubar.addMenu("TOOLS")
-        reload_model_action = QAction("RELOAD_MODE_YOLO", self)
-        reload_model_action.triggered.connect(self.reload_yolo_model)
-        tool_menu.addAction(reload_model_action)
-
+        tool_menu.addAction(QAction("RELOAD_MODE_YOLO", self, triggered=self.reload_yolo_model))
         help_menu = menubar.addMenu("HELPS")
-        help_action = QAction("SHOW_HELPS", self)
-        help_action.triggered.connect(self.show_help_dialog)
-        help_menu.addAction(help_action)
-
-        self.rotation_active = False
-        self.warned_once = False
-        self.zoom_window = None
-
+        help_menu.addAction(QAction("SHOW_HELPS", self, triggered=self.show_help_dialog))
         self.cap = cv2.VideoCapture(CAMERA_INDEX)
         self.cap.set(3, FRAME_WIDTH)
         self.cap.set(4, FRAME_HEIGHT)
-
+        self.zoom_window = None
         self.log_window = LogWindow()
-
+        self.rotation_active = False
+        self.warned_once = False
         self.image_label = QLabel()
         self.image_label.setScaledContents(True)
         self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
+        self.image_label.setFixedSize(FRAME_WIDTH, FRAME_HEIGHT)
         self.label_wafer_type = QLabel("Wafer Type: -")
         self.label_coords = QLabel("Offset: (0, 0)")
         self.label_accuracy = QLabel("Accuracy: 0%")
@@ -238,55 +219,38 @@ class MainWindow(QMainWindow):
         self.label_angle = QLabel("Angle: 0.00°")
         self.label_angle_error = QLabel("Angle_Err: 0.00°")
         for label in [self.label_wafer_type, self.label_coords, self.label_accuracy, self.label_state, self.label_angle, self.label_angle_error]:
-            label.setStyleSheet("font-size: 20px; padding: 4px;")
-
-        self.status_layout = QVBoxLayout()
+            label.setStyleSheet("font-size: 15px; padding: 10px;")
+        status_layout = QVBoxLayout()
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(0)
         for label in [self.label_wafer_type, self.label_coords, self.label_accuracy, self.label_state, self.label_angle, self.label_angle_error]:
-            self.status_layout.addWidget(label)
-
+            status_layout.addWidget(label)
         status_widget = QWidget()
-        status_widget.setLayout(self.status_layout)
-        status_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
+        status_widget.setLayout(status_layout)
         self.tabs = QTabWidget()
-        self.tabs.setTabPosition(QTabWidget.North)
-        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-        self.align_tab = QWidget()
-        self.angle_tab = QWidget()
-        self.advanced_tab = QWidget()
-
-        self.tabs.addTab(self.align_tab, "Align")
-        self.tabs.addTab(self.angle_tab, "Angle")
-        self.tabs.addTab(self.advanced_tab, "Advanced")
         self.tabs.hide()
-
+        self.tabs.setTabPosition(QTabWidget.North)
+        self.align_tab = QWidget()
         align_layout = QVBoxLayout()
         self.s_button = QPushButton("ALIGN")
         self.m_button = QPushButton("MANUAL")
         self.u_button = QPushButton("HOMING")
-        self.s_button.setFixedSize(300, 100)
-        self.m_button.setFixedSize(300, 100)
-        self.u_button.setFixedSize(300, 100)
-        self.s_button.setStyleSheet("font-size: 25px;")  
-        self.m_button.setStyleSheet("font-size: 25px;")
-        self.u_button.setStyleSheet("font-size: 25px;")
+        for btn in [self.s_button, self.m_button, self.u_button]:
+            btn.setFixedHeight(70)
+            btn.setFixedWidth(460)
+            btn.setStyleSheet("font-size: 20px; padding: 6px;")
         self.s_button.clicked.connect(self.toggle_send)
         self.m_button.clicked.connect(self.toggle_target_mode)
         self.u_button.clicked.connect(self.move_home)
-        align_layout.addWidget(self.s_button)
-        align_layout.addWidget(self.m_button)
-        align_layout.addWidget(self.u_button)
+        for btn in [self.s_button, self.m_button, self.u_button]:
+            align_layout.addWidget(btn)
         self.align_tab.setLayout(align_layout)
-
-        align_layout.setStretchFactor(self.s_button, 1)
-        align_layout.setStretchFactor(self.m_button, 1)
-
+        self.angle_tab = QWidget()
         angle_layout = QVBoxLayout()
         self.a_button = QPushButton("ANGLE")
         self.r_button = QPushButton("ROTATION")
-        self.a_button.setFixedSize(300, 100)
-        self.r_button.setFixedSize(300, 100)
+        self.a_button.setFixedSize(100, 50)
+        self.r_button.setFixedSize(100, 50)
         self.a_button.setStyleSheet("font-size: 25px;")
         self.r_button.setStyleSheet("font-size: 25px;")
         self.a_button.clicked.connect(self.set_target_degree)
@@ -294,81 +258,72 @@ class MainWindow(QMainWindow):
         angle_layout.addWidget(self.a_button)
         angle_layout.addWidget(self.r_button)
         self.angle_tab.setLayout(angle_layout)
-
+        self.advanced_tab = QWidget()
         advanced_layout = QVBoxLayout()
         self.t_button = QPushButton("AUTO")
-        self.t_button.setFixedSize(300, 100)
+        self.t_button.setFixedSize(200, 100)
         self.t_button.setStyleSheet("font-size: 25px;")
         self.t_button.clicked.connect(self.toggle_auto_mode)
         advanced_layout.addWidget(self.t_button)
         self.advanced_tab.setLayout(advanced_layout)
+        self.tabs.addTab(self.align_tab, "Align")
+        self.tabs.addTab(self.angle_tab, "Angle")
+        self.tabs.addTab(self.advanced_tab, "Advanced")
+        self.tabs.setFixedWidth(500)
+    
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+        left_layout.addWidget(self.tabs)
+        left_layout.addStretch()
 
-        tab_and_status_layout = QHBoxLayout()
-        tab_and_status_layout.addWidget(self.tabs)
-        tab_and_status_layout.addWidget(status_widget)
-        tab_and_status_layout.setStretch(0, 3)
-        tab_and_status_layout.setStretch(1, 2)
+        left_panel = QWidget()
+        left_panel.setLayout(left_layout)
+        left_panel.setFixedWidth(520) 
+        
 
-        self.log_box = QTextEdit()
-        self.log_box.setReadOnly(True)
-        self.log_box.setText("청운대학교 캡스톤디자인\nF1: Help F2: Zoom_window F3: Log_window F5: Reload_Model_YOLO")
-        self.log_box.setStyleSheet("font-size: 18px;")
-        self.log_box.setFixedHeight(80)
+        bottom_layout = QHBoxLayout()
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(0)
+        bottom_layout.setStretch(0, 1)  # left_panel
+        bottom_layout.setStretch(1, 1)  # center_spacer 
+        bottom_layout.setStretch(2, 1)  # status_widget
 
-        main_layout = QVBoxLayout() 
+        # 중앙 투명 패널 추가
+        center_spacer = QWidget()
+        center_spacer.setFixedWidth(300)
+        center_spacer.setStyleSheet("background-color: transparent;")  # 투명하게
+
+        # 기존 bottom_layout에 추가 순서 수정
+        bottom_layout.addWidget(left_panel)
+        bottom_layout.addWidget(center_spacer)   # 중앙 Spacer
+        bottom_layout.addWidget(status_widget)
 
         bottom_widget = QWidget()
-        bottom_layout = QHBoxLayout()
-
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_widget.setLayout(bottom_layout)
         bottom_widget.setFixedHeight(200)
 
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         main_layout.addWidget(self.image_label)
         main_layout.addWidget(bottom_widget)
-        main_layout.addWidget(self.log_box)
 
-
-        central_widget = QWidget()  
-        main_layout = QVBoxLayout()
-        main_layout = QVBoxLayout()
-
-        self.image_label.setFixedHeight(540) 
-        self.log_box.setFixedHeight(80)
-
-        bottom_widget = QWidget()
-        bottom_layout = QHBoxLayout()
-        bottom_layout.addWidget(self.tabs)
-        bottom_layout.addWidget(status_widget)
-        bottom_widget.setLayout(bottom_layout)
-        bottom_widget.setFixedHeight(200)  
-
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(self.image_label)
-        main_layout.addWidget(bottom_widget)
-        main_layout.addWidget(self.log_box)
-
-        self.setCentralWidget(central_widget)
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
-        self.t_button.setFixedSize(700, 600)
-
         self.ser_reader = None
         self.ser_writer = None
         self.serial_ready = False
-
         self.reset_timer = QTimer()
         self.reset_timer.setSingleShot(True)
         self.reset_timer.timeout.connect(self.set_waiting)
-
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(30)
-
         self.setMouseTracking(True)
         self.show()
-###################################################################
+############################################################################################################
     def closeEvent(self, event):
         log("[SYSTEM] CLOSING", self)
         if hasattr(self, 'timer') and self.cap.isOpened():
@@ -604,16 +559,22 @@ class MainWindow(QMainWindow):
 
     def mousePressEvent(self, event):
         global Target_Point, setting_target_mode, last_sent_command, force_send, confirmed_center, send_enabled
+
         if setting_target_mode and event.button() == Qt.LeftButton:
-            x = int(event.pos().x() * FRAME_WIDTH / self.image_label.width())
-            y = int(event.pos().y() * FRAME_HEIGHT / self.image_label.height())
-            Target_Point = [x, y]
-            log(f"[TARGET] Target set to: {Target_Point}", self)
-            last_sent_command = ""
-            force_send = True
-            setting_target_mode = False
-            send_enabled = False
-            self.label_state.setText("Status: STANDBY")
+            pos = event.pos()
+            widget_pos = self.image_label.mapFrom(self, pos)
+            x = widget_pos.x()
+            y = widget_pos.y()
+
+            if 0 <= x < self.image_label.width() and 0 <= y < self.image_label.height():
+                Target_Point = [int(x), int(y)]
+                log(f"[TARGET] 정확 좌표 설정됨 → {Target_Point}", self)
+
+                last_sent_command = ""
+                force_send = True
+                setting_target_mode = False
+                send_enabled = False
+                self.label_state.setText("Status: STANDBY")
 
     def reset(self):
         global confirmed_center, stable_count, last_sent_command
@@ -635,7 +596,6 @@ class MainWindow(QMainWindow):
             return
         
         display = frame.copy()
-
         results = model(display, conf=0.4)
 
         if not self.rotation_active: 
@@ -731,10 +691,7 @@ class MainWindow(QMainWindow):
         h, w, ch = rgb.shape
         img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
 
-        pixmap = QPixmap.fromImage(img).scaled(
-            self.image_label.width(), self.image_label.height(),
-            Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
+        pixmap = QPixmap.fromImage(img)
         self.image_label.setPixmap(pixmap)
 
         zoom_size = 100
@@ -834,7 +791,6 @@ def main():
         window = MainWindow(loop)
       
         window.serial_ready = True
-        # loop.run_until_complete(window.serial_setup())
 
         with loop:
             loop.run_forever()
