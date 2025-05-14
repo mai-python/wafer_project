@@ -1,8 +1,8 @@
-import sys, os, gc, time, asyncio, cv2, torch, numpy as np, serial_asyncio
+import sys, os, gc, time, asyncio, cv2, torch, numpy as np, serial_asyncio 
 from ultralytics import YOLO
 from qasync import QEventLoop
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt, QTimer 
+from PyQt5.QtGui import QImage, QPixmap 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QTextEdit, QInputDialog,
     QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QComboBox, QSizePolicy, QLineEdit, QMessageBox, QTabWidget,
@@ -14,40 +14,49 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 model = YOLO("C:\\Users\\Mai\\Desktop\\wafer_project\\best.pt") # best.pt check
 ##########################################수정금지#########################################################
-
+#openCV 영상 해상도(가로,세로)
 FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
+#정렬 목표 좌표(기본은 화면 중앙값)
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
+#원위치 목표 좌표
 HOME_DXDY = (400, 200)
-
+#오차범위 값 1픽셀, 1도
 TOLERANCE_PX, TOLERANCE_R = 1, 1
+#1픽셀 당 몇 mm인지 변환
 PIXEL_TO_MM_X, PIXEL_TO_MM_Y = 0.6, 0.83
+#1스텝 당 갈 수 있는 mm, 최대 스텝수 제한
 STEPS_PER_MM, MAX_STEPS = 55, 32000
-
+# 컴퓨터 내 카메라 번호, 노트북은 0번이 웹캠임
 CAMERA_INDEX = 0
+#아두이노 시리얼 통신 속도
 BAUDRATE = 9600
+#아두이노 시리얼 포트 
 SERIAL_PORT = "COM6"
-
+#웨이퍼(노란색 원) 인식을 위한 HSV 범위
 YELLOW_LOWER, YELLOW_UPPER = (15, 100, 100), (40, 255, 255)
+#객체 인식 범위 및 원형 범위 조건
 AREA_THRESHOLD, ROUNDNESS_THRESHOLD = 1000, 0.4
+#만족해야 루프종료(정렬완료 등)
 STABLE_REQUIRED = 3
-
+#화면 출력용 글꼴
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE, FONT_THICKNESS = 0.6, 2
 TEXT_COLOR = (255, 255, 255)
-
+#로테이션 변수: 목표각도 및 현재각도
 Target_degree, angle = 0, 0
+#각도를 스텝으로 변환, 최대 회전스텝 제한
 DEGREE_TO_STEP, MAX_ROTATION_STEP = 1, 32000
-
+#화면에 보이는 바운딩 박스(클래스) 색 조정
 CLASS_COLORS = {
     'F1': (0, 0, 50), 'F2': (0, 0, 100),
     'P100': (0, 0, 255), 'P111': (255, 0, 0),
 }
-
+#detection_summary에 사용되는 그래프 구성성분
 detection_stats = {
-    "P100": {"F1": [], "F2": [], "P100": [], "P111": []}, #png저장용
+    "P100": {"F1": [], "F2": [], "P100": [], "P111": []},
     "P111": {"F1": [], "F2": [], "P100": [], "P111": []}
 }
-
+##전역변수##
 confirmed_center = None
 send_enabled = sending_command = awaiting_done = home_mode = False
 stable_count = 0
@@ -63,66 +72,91 @@ def show_warning(self, title, message):
     warning.setIcon(QMessageBox.Warning)
     warning.setWindowTitle(title)
     warning.setText(message)
+    # 경고 메시지 보내는 함수, title: 화면(창) 제목 message: 메시지 내용
     warning.setStandardButtons(QMessageBox.Ok)
     warning.exec_()
 
 def calculate_accuracy_px(target_point, center_point):
+    #중심 좌표 정렬 accuracy(정확도) 구하는 함수
     dx = target_point[0] - center_point[0]
     dy = target_point[1] - center_point[1]
     error_distance = (dx ** 2 + dy ** 2) ** 0.5
-
+    #두 point 사이의 거리로 accuracy계산[%단위] 
     MAX_ERROR_PX = 30        
     PERFECT_THRESH_PX = 1.5   
 
-    if error_distance <= PERFECT_THRESH_PX:
+    if error_distance <= PERFECT_THRESH_PX: #error_distance: Target_point와 center_point사이의 거리
+        #perfect_thresh_px보다 작거나 같다면 정확도:100%
         return 100.0
+    #아니면 정확도0%, 30px이내면 linear하게 정확도 상승
     elif error_distance >= MAX_ERROR_PX:
-        return 0.0
+        return 0.0 
     else:
+        # 정확도 계산 공식
         return round((1 - (error_distance / MAX_ERROR_PX)) * 100, 2)
-
+    
 def log(msg, window):
+    # 현재 시각을 시간,분,초로 나타냄
     timestamp = datetime.now().strftime("[%H:%M:%S]")
-    full_msg = f"{timestamp} {msg}"
+    # 로그 msg 생성: [시간:분:초, 내용]
+    full_msg = f"{timestamp} {msg}" 
+    #로그를 터미널에 출력
     print(full_msg)
+    #log_window(로그창) 있으면 거기에도 같은 메시지 출력, 총 2개의 로그가 출력됨
     if hasattr(window, 'log_window') and window.log_window:
         window.log_window.append_log(full_msg)
 
 def compute_roundness(cnt):
+    # cv가 계산한 contour의 면적 계산
     area = cv2.contourArea(cnt)
+    #contour 둘레 계산, True는 곡선          #contour: 물체의 윤곽선(엣지)
     perimeter = cv2.arcLength(cnt, True)
+    #둘레가 0이면, roundness는 0으로 > 계산 무효
     if perimeter == 0:
         return 0
+    #roundness(원형도) 계산 공식, 1에 가까울수록 좋음
     return 4 * np.pi * area / (perimeter * perimeter)
 
 def detect_best_yellow_circle(frame):
+    #hsv 형식으로 바꾸어 노란색 범위를 추출(웨이퍼는 노란색이니까)
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    #노란색 범위 설정(어디까지가 노란색인지)
     mask = cv2.inRange(hsv, YELLOW_LOWER, YELLOW_UPPER)
+    #gaussianblur(가우시안 블러): 흐리게 처리하여 경계선의 노이즈를 제거 및 mask 인식 정확도 향상
     mask = cv2.GaussianBlur(mask, (7, 7), 2)
+    #mask에서 contour추출하여 외곽만 사용
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    best = None
-    best_score = 0
+    #best를 찾기 위한 초기 조건(얼마나 둥근지, 면적이 적당한지)
+    best = None  #초기화
+    best_score = 0 #초기화
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area < AREA_THRESHOLD:
             continue
+        #roundness가 기준보다 크거나 같으면 인정
         roundness = compute_roundness(cnt)
         if roundness >= ROUNDNESS_THRESHOLD:
             score = area * roundness
             (x, y), _ = cv2.minEnclosingCircle(cnt)
+            #만약 현재 스코어가 최고점보다 크면 갱신
             if score > best_score:
                 best = (int(x), int(y))
                 best_score = score
+    #best값 반환
     return best
 
 def draw_yolo_boxes(frame, results, window=None, override_type=None):
+    #YOLO가 탐지 후 boxes.data를 찾아봄
     for box in results[0].boxes.data:
+        #x1,y2: 바운딩 박스 왼쪽 위 좌표값, x2,y2: 바운딩 박스 오른쪽 아래 좌표
+        #conf: 신뢰도(정확도), ex) F1: conf = 0.7이면 실제로 F1, conf=.2면 오탐지 가능성 높음
         x1, y1, x2, y2, conf, cls = box.tolist()
+        #클래스(F1, F2, 라벨링이라 생각하면 됨)
         class_name = results[0].names[int(cls)]
-
+        # F1, F2아니면 패스
         if class_name not in ["F1", "F2"]:
             continue
-
+        #바운딩 박스 및 텍스트 꾸미기
         color = CLASS_COLORS.get(class_name, (0, 255, 0))
         cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
         label = f"{class_name}"
@@ -131,102 +165,114 @@ def draw_yolo_boxes(frame, results, window=None, override_type=None):
         cv2.putText(frame, label, (int(x1), int(y1 - 4)), FONT, FONT_SCALE, TEXT_COLOR, FONT_THICKNESS)
 
 def detect_yolo_center(frame):
+    #openCv는 BGR로 YOLO는 RGB로 바꾸어야함
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    #결과값은 results로
     results = model(rgb)
+    #YOLO가 탐지한 바운딩 박스의 정보(좌표,conf,class)를 처리
     for box in results[0].boxes.data:
         x1, y1, x2, y2, *_ = box.tolist()
+
+        #보정값
         cx = int((x1 + x2) / 2)
         cy = FRAME_HEIGHT - int((y1 + y2) / 2)
         return (cx, cy)
+    #박스없으면 None반환
     return None
 
 def calculate_angle(pt1, pt2):
+    # 두 점 사이의 기울기로 각도 계산 함수
     dx = pt2[0] - pt1[0]
     dy = pt2[1] - pt1[1]
+    # 각도는 아크탄젠트로 구하고, radian을 degree로 변환
     angle = np.degrees(np.arctan2(dy, dx))
+    #각도에 360을 더해서 (+)값으로 보정
     return angle + 360 if angle < 0 else angle
 
 def calculate_rotation(current_angle, target_angle):
+    #두 angle의 차이를 -180~180으로 규정. 구하는 이유: rotation할 때 가장 빠른 방향으로 가기 위해
+    #그러나 우리 코드에서는 diR = 1(rotation방향)을 하나로 정의했기 때문에 의미없음
     dR = (target_angle - current_angle + 540) % 360 - 180
     diR = 1
     stR = max(1, min(int(abs(dR) * DEGREE_TO_STEP), MAX_ROTATION_STEP))
     return diR, stR
 
 def calculate_steps(from_point, to_point):
-    dx = to_point[0] - from_point[0]
-    dy = from_point[1] - to_point[1]
-    dx_mm = abs(dx) * PIXEL_TO_MM_X
-    dy_mm = abs(dy) * PIXEL_TO_MM_Y
-    dx_steps = min(int(dx_mm * STEPS_PER_MM), MAX_STEPS)
-    dy_steps = min(int(dy_mm * STEPS_PER_MM), MAX_STEPS)
-    dix = 1 if dx > 0 else 0
-    diy = 1 if dy > 0 else 0
-    command = f"{dix},{diy},{dx_steps},{dy_steps},0,0"
+    dx = to_point[0] - from_point[0] #x축 이동거리
+    dy = from_point[1] - to_point[1] #y축 이동거리
+    dx_mm = abs(dx) * PIXEL_TO_MM_X #x축 이동거리를 mm단위 변환
+    dy_mm = abs(dy) * PIXEL_TO_MM_Y #y축 이동거리를 mm단위 변환
+    dx_steps = min(int(dx_mm * STEPS_PER_MM), MAX_STEPS) # x축 스텝 수로 변환
+    dy_steps = min(int(dy_mm * STEPS_PER_MM), MAX_STEPS) # y축 스텝 수로 변환
+    dix = 1 if dx > 0 else 0 #x 방향 좌우 설정
+    diy = 1 if dy > 0 else 0 #y 방향 좌우 설정
+    command = f"{dix},{diy},{dx_steps},{dy_steps},0,0" # 아두이노에게 보낼 명령 문자열 생성 이때 0,0은 회전명령임
     return dx, dy, dx_steps, dy_steps, command
 ##########################################수정금지#########################################################
 class MainWindow(QMainWindow):
-    def __init__(self, loop):
-        super().__init__()
+    def __init__(self, loop): 
+        super().__init__() # 초기화
         self.loop = loop
+        # 프로그램 창 제목
         self.setWindowTitle("Wafer_Aligner")
         self.setFixedSize(FRAME_WIDTH, FRAME_HEIGHT + 200 + self.menuBar().height())
         self.setMouseTracking(True)
-        # 메뉴바
+        #메뉴바 생성
         menubar = self.menuBar()
+        #FILE 메뉴
         file_menu = menubar.addMenu("FILE")
-        file_menu.addAction(QAction("EXIT", self, triggered=self.close))
-        capture_action = QAction("Capture Screenshot", self)
+        file_menu.addAction(QAction("EXIT", self, triggered=self.close)) # 프로그램 종료
+        capture_action = QAction("Capture", self) # 프로그램 화면 이미지 캡쳐
         capture_action.triggered.connect(self.capture_screenshot)
         file_menu.addAction(capture_action)
-
+        #Function 메뉴
         function_menu = menubar.addMenu("Function")
-        function_menu.addAction(QAction("Align", self, triggered=self.show_align_tab))
-        function_menu.addAction(QAction("Rotation", self, triggered=self.show_angle_tab))
-        function_menu.addAction(QAction("Advanced", self, triggered=self.show_advanced_tab))
-
+        function_menu.addAction(QAction("Align", self, triggered=self.show_align_tab)) # Align 탭 생성 기능
+        function_menu.addAction(QAction("Rotation", self, triggered=self.show_angle_tab)) # Rotation 탭 생성 기능
+        function_menu.addAction(QAction("Advanced", self, triggered=self.show_advanced_tab)) # Advanced 탭 생성 기능
+        #Tool 메뉴
         tool_menu = menubar.addMenu("Tool")
-        settings_menu = QMenu("Settings", self)
-        tool_menu.addAction(QAction("RELOAD_MODE_YOLO", self, triggered=self.reload_yolo_model))
+        settings_menu = QMenu("Settings", self) # 변수 및 그래프 보기 기능
+        tool_menu.addAction(QAction("RELOAD_MODE_YOLO", self, triggered=self.reload_yolo_model)) # 모델 다시불러오기, 상태 좋아지게하는 기능
         tool_menu.addMenu(settings_menu)    
-        settings_menu.addAction("Show Graph", self.show_graph_tab)
-        settings_menu.addAction("Variables", self.show_variable_tab)
-        help_menu = menubar.addMenu("Help")
-
-        help_menu.addAction(QAction("Guide", self, triggered=self.show_help_dialog))
-
+        settings_menu.addAction("Show Graph", self.show_graph_tab) # 그래프 보기
+        settings_menu.addAction("Variables", self.show_variable_tab) # 변수 설정하기
+        #help 메뉴
+        help_menu = menubar.addMenu("Help") 
+        help_menu.addAction(QAction("Guide", self, triggered=self.show_help_dialog)) # 도움말
+        #프로그램 디스플레이 출력
         self.cap = cv2.VideoCapture(CAMERA_INDEX)
-        self.cap.set(3, FRAME_WIDTH)
+        #화면크기
+        self.cap.set(3, FRAME_WIDTH) 
         self.cap.set(4, FRAME_HEIGHT)
 
-        self.zoom_window = None
-        self.log_window = LogWindow()
-        self.rotation_active = False
-        self.warned_once = False
-
+        self.zoom_window = None # F2누르면 나오는 확대창
+        self.log_window = LogWindow() # F3누르면 나오는 로그창
+        self.rotation_active = False # 회전 정렬 변수
+        self.warned_once = False # 카메라 경고 변수
+        #그래프 탭
         self.graph_tab = QWidget()
         graph_layout = QVBoxLayout()
         self.graph_canvas = GraphCanvas(self)
         graph_layout.addWidget(self.graph_canvas)
         self.graph_tab.setLayout(graph_layout)
-
+        #디스플레이 라벨
         self.image_label = QLabel()
         self.image_label.setScaledContents(True)
         self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.image_label.setFixedSize(FRAME_WIDTH, FRAME_HEIGHT)
-
+        #탭 ui
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.North)
-        self.tabs.hide()
-        self.setup_tabs()
-
+        self.tabs.hide() # 처음에 숨기고
+        self.setup_tabs() # 탭 누적? 쌓이게
+        # 가운데 ui (동작 상태 및 진행률 막대)
         self.label_message = QLabel(" 대기중 ")
         self.label_message.setStyleSheet("font-size: 16px; color: black;")
-
-        self.align_label = QLabel("ALIGN_PROGRESS")
+        self.align_label = QLabel("ALIGN_PROGRESS") # 진행률 막대
         self.align_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         self.rotation_label = QLabel("ROTATION_PROGRESS")
         self.rotation_label.setStyleSheet("font-size: 14px; font-weight: bold;")
-
         self.align_bar = QProgressBar()
         self.rotation_bar = QProgressBar()
         self.align_bar.setMaximum(100)
@@ -240,7 +286,7 @@ class MainWindow(QMainWindow):
         self.progress_widget = QWidget()
         self.progress_widget.setLayout(progress_layout)
         self.progress_widget.setFixedWidth(300)
-
+        # 오른쪽 ui (status)
         self.label_wafer_type = QLabel("Wafer Type: -")
         self.label_coords = QLabel("Offset: (0, 0)")
         self.label_accuracy = QLabel("Accuracy: 0%")
@@ -250,7 +296,6 @@ class MainWindow(QMainWindow):
         for lbl in [self.label_wafer_type, self.label_coords, self.label_accuracy,
                     self.label_state, self.label_angle, self.label_angle_error]:
             lbl.setStyleSheet("font-size: 15px; padding: 10px;")
-
         status_layout = QGridLayout()
         status_layout.addWidget(self.label_wafer_type, 0, 0)
         status_layout.addWidget(self.label_coords, 0, 1)
@@ -258,11 +303,10 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.label_state, 1, 0)
         status_layout.addWidget(self.label_angle, 1, 1)
         status_layout.addWidget(self.label_angle_error, 1, 2)
-
         self.status_widget = QWidget()
         self.status_widget.setLayout(status_layout)
         self.status_widget.setFixedWidth(460)
-
+        # 왼쪽 패널(탭과 버튼 포함)
         left_panel = QWidget()
         left_layout = QVBoxLayout()
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -271,42 +315,43 @@ class MainWindow(QMainWindow):
         left_layout.addStretch()
         left_panel.setLayout(left_layout)
         left_panel.setFixedWidth(520)
-
+        #프로그램아래여백
         bottom_layout = QHBoxLayout()
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(0)
         bottom_layout.addWidget(left_panel)
         bottom_layout.addWidget(self.progress_widget)
         bottom_layout.addWidget(self.status_widget)
-
         bottom_widget = QWidget()
         bottom_widget.setLayout(bottom_layout)
         bottom_widget.setFixedHeight(200)
-
+        #메인화면 레이아웃
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         main_layout.addWidget(self.image_label)
         main_layout.addWidget(bottom_widget)
-
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
-
+        # progress바에 사용되는 변수
         self.initial_offset = (100, 100)
         self.initial_angle = 140
+        # 아두이노 관련 
         self.ser_reader = None
         self.ser_writer = None
         self.serial_ready = False
+        # 정렬 대기용 타이머(3초뒤 움직이게 하는 auto_align에서 사용)
         self.reset_timer = QTimer()
         self.reset_timer.setSingleShot(True)
         self.reset_timer.timeout.connect(self.set_waiting)
+        # update_frame에서 사용하는 타이머
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(30)
 
         self.setMouseTracking(True)
-        self.show()
+        self.show() # 화면 표시
 
     def setup_tabs(self):
         self.align_tab = QWidget()
@@ -377,7 +422,9 @@ class MainWindow(QMainWindow):
 
         self.align_bar.setValue(int(align_progress))
         self.rotation_bar.setValue(int(rotation_progress))
+
     def set_target_degree(self):
+        #decimals: 소수점n자리까지 min/max: 범위 제한
         degree, ok = QInputDialog.getDouble(self, "SETTING", "INPUT DEGREE", decimals=1, min=0, max=360)
         if ok:
             global Target_degree
