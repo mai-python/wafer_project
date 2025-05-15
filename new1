@@ -751,7 +751,7 @@ def update_frame(self):
 
         # 비동기 명령 전송 전: 안전하게 이벤트 루프 가져오기
         try:
-            loop = asyncio.get_running_loop()  # 실행 중인 루프가 있는지 확인
+            loop = asyncio.get_running_loop()  # 실행 중인 루프가 있는지
         except RuntimeError:
             loop = self.loop  # 없으면 self.loop 사용 (MainWindow에서 받은 QEventLoop)
 
@@ -760,13 +760,13 @@ def update_frame(self):
                 stable_count += 1
             if stable_count >= STABLE_REQUIRED:
                 self.label_state.setText("Status: DONE")
-                # create_task로 직접 비동기 명령 실행하면 오류 날 수 있음 → loop.create_task 사용
-                loop.create_task(self.send_serial_command("STOP"))  # ★ 수정 포인트 1
+                
+                loop.create_task(self.send_serial_command("STOP"))  
         else:
             stable_count = 0
 
         if send_enabled and stable_count < STABLE_REQUIRED:
-            loop.create_task(self.send_serial_command(command))  # ★ 수정 포인트 2
+            loop.create_task(self.send_serial_command(command))  
 
         accuracy = calculate_accuracy_px(Target_Point, confirmed_center)
         self.graph_canvas.update_plot(accuracy)
