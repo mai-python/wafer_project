@@ -671,143 +671,148 @@ class MainWindow(QMainWindow):
         stable_count = 0
         last_sent_command = ""
 
-    def update_frame(self):
-        global confirmed_center, stable_count, angle
+def update_frame(self):
+    global confirmed_center, stable_count, angle
 
-        if not self.serial_ready:
-            return
+    if not self.serial_ready:
+        return
 
-        ret, frame = self.cap.read()
-        if not ret:
-            if not self.warned_once:
-                log("[CAMERA] Received failed to frame", self)
-                self.warned_once = True
-            return
-        
-        display = frame.copy()
-        results = model(display, conf=0.4)
+    ret, frame = self.cap.read()
+    if not ret:
+        if not self.warned_once:
+            log("[CAMERA] Received failed to frame", self)
+            self.warned_once = True
+        return
 
-        if not self.rotation_active: 
-            for box in results[0].boxes.data:
-                x1, y1, x2, y2, conf, cls = box.tolist()
-                label = results[0].names[int(cls)]
-                print(f"Detected: {label}, conf: {conf:.2f}")
+    display = frame.copy()
+    results = model(display, conf=0.4)
 
-        has_f1 = False
-        has_f2 = False
-        for box in results[0].boxes.data:
-            _, _, _, _, _, cls = box.tolist()
-            label = results[0].names[int(cls)]
-            if label == "F1":
-                has_f1 = True
-            elif label == "F2":
-                has_f2 = True
-
-        wafer_type = None
-        if has_f1 and has_f2:
-            wafer_type = "P100"
-        elif has_f1:
-            wafer_type = "P111"
-
-        draw_yolo_boxes(display, results, self, wafer_type)
-
-        wafer_center = None
-        f1_center = None
-        f2_center = None
+    if not self.rotation_active:
         for box in results[0].boxes.data:
             x1, y1, x2, y2, conf, cls = box.tolist()
             label = results[0].names[int(cls)]
-            cx = int((x1 + x2) / 2)
-            cy = int((y1 + y2) / 2)
-            if label in ["P100", "P111"]:
-                wafer_center = (cx, cy)
-            elif label == "F1":
-                f1_center = (cx, cy)
-            elif label == "F2":
-                f2_center = (cx, cy)
-            if wafer_type in ["P100", "P111"]:
-                for box in results[0].boxes.data:
-                    _, _, _, _, conf, cls = box.tolist()
-                    label = results[0].names[int(cls)]
-                    if label in detection_stats[wafer_type]:
-                        detection_stats[wafer_type][label].append(conf)
+            print(f"Detected: {label}, conf: {conf:.2f}")
 
-        if f1_center and wafer_center:
-            angle = calculate_angle(f1_center, wafer_center) 
-            angle_text = f"{angle:.2f}°"
-            self.label_angle.setText(f"Angle: {angle:.2f}°")
+    has_f1 = False
+    has_f2 = False
+    for box in results[0].boxes.data:
+        _, _, _, _, _, cls = box.tolist()
+        label = results[0].names[int(cls)]
+        if label == "F1":
+            has_f1 = True
+        elif label == "F2":
+            has_f2 = True
 
-            diff = (Target_degree - angle + 540) % 360 - 180
-            angle_error = abs(diff)
-            self.label_angle_error.setText(f"Aangle_Err: {angle_error:.2f}°")
+    wafer_type = None
+    if has_f1 and has_f2:
+        wafer_type = "P100"
+    elif has_f1:
+        wafer_type = "P111"
 
-            cv2.putText(display, angle_text, (f1_center[0] + 10, f1_center[1] - 10), FONT, FONT_SCALE, (0, 255, 255), FONT_THICKNESS)
+    draw_yolo_boxes(display, results, self, wafer_type)
 
-        center = detect_best_yellow_circle(display) or detect_yolo_center(display)
-        if center:
-            confirmed_center = center
-            dx, dy, dx_steps, dy_steps, command = calculate_steps(center, Target_Point)
-            self.label_coords.setText(f"Offset: ({dx}, {dy})")
+    wafer_center = None
+    f1_center = None
+    f2_center = None
+    for box in results[0].boxes.data:
+        x1, y1, x2, y2, conf, cls = box.tolist()
+        label = results[0].names[int(cls)]
+        cx = int((x1 + x2) / 2)
+        cy = int((y1 + y2) / 2)
+        if label in ["P100", "P111"]:
+            wafer_center = (cx, cy)
+        elif label == "F1":
+            f1_center = (cx, cy)
+        elif label == "F2":
+            f2_center = (cx, cy)
+        if wafer_type in ["P100", "P111"]:
+            for box in results[0].boxes.data:
+                _, _, _, _, conf, cls = box.tolist()
+                label = results[0].names[int(cls)]
+                if label in detection_stats[wafer_type]:
+                    detection_stats[wafer_type][label].append(conf)
 
-            if abs(dx) <= TOLERANCE_PX and abs(dy) <= TOLERANCE_PX:
-                if send_enabled and not awaiting_done and not sending_command:
-                    stable_count += 1
-                if stable_count >= STABLE_REQUIRED:
-                    self.label_state.setText("Status: DONE")
-                    asyncio.create_task(self.send_serial_command("STOP"))
-            else:
-                stable_count = 0
+    if f1_center and wafer_center:
+        angle = calculate_angle(f1_center, wafer_center)
+        angle_text = f"{angle:.2f}°"
+        self.label_angle.setText(f"Angle: {angle:.2f}°")
 
-            if send_enabled and stable_count < STABLE_REQUIRED:
-                asyncio.create_task(self.send_serial_command(command))
+        diff = (Target_degree - angle + 540) % 360 - 180
+        angle_error = abs(diff)
+        self.label_angle_error.setText(f"Aangle_Err: {angle_error:.2f}°")
 
-            accuracy = calculate_accuracy_px(Target_Point, confirmed_center)
-            self.graph_canvas.update_plot(accuracy)
-            self.label_accuracy.setText(f"Accuracy: {accuracy}%")
+        cv2.putText(display, angle_text, (f1_center[0] + 10, f1_center[1] - 10), FONT, FONT_SCALE, (0, 255, 255), FONT_THICKNESS)
+
+    center = detect_best_yellow_circle(display) or detect_yolo_center(display)
+    if center:
+        confirmed_center = center
+        dx, dy, dx_steps, dy_steps, command = calculate_steps(center, Target_Point)
+        self.label_coords.setText(f"Offset: ({dx}, {dy})")
+
+        # 비동기 명령 전송 전: 안전하게 이벤트 루프 가져오기
+        try:
+            loop = asyncio.get_running_loop()  # 실행 중인 루프가 있는지 확인
+        except RuntimeError:
+            loop = self.loop  # 없으면 self.loop 사용 (MainWindow에서 받은 QEventLoop)
+
+        if abs(dx) <= TOLERANCE_PX and abs(dy) <= TOLERANCE_PX:
+            if send_enabled and not awaiting_done and not sending_command:
+                stable_count += 1
+            if stable_count >= STABLE_REQUIRED:
+                self.label_state.setText("Status: DONE")
+                # create_task로 직접 비동기 명령 실행하면 오류 날 수 있음 → loop.create_task 사용
+                loop.create_task(self.send_serial_command("STOP"))  # ★ 수정 포인트 1
         else:
-            self.label_coords.setText("Offset: (0, 0)")
-            self.label_accuracy.setText("Accuracy: 0%")
+            stable_count = 0
 
-        if not self.rotation_active:  
-            cv2.circle(display, tuple(Target_Point), 5, (0, 0, 255), -1)
-            if confirmed_center:
-                cv2.circle(display, confirmed_center, 5, (0, 255, 0), -1)
-                cv2.line(display, tuple(Target_Point), confirmed_center, (255, 0, 0), 2)
-        wafer_type = None
-        if has_f1 and has_f2:
-            wafer_type = "P100"
-        elif has_f1:
-            wafer_type = "P111"
-        else:
-            wafer_type = "-"
+        if send_enabled and stable_count < STABLE_REQUIRED:
+            loop.create_task(self.send_serial_command(command))  # ★ 수정 포인트 2
 
-        self.label_wafer_type.setText(f"Wafer Type: {wafer_type}")
+        accuracy = calculate_accuracy_px(Target_Point, confirmed_center)
+        self.graph_canvas.update_plot(accuracy)
+        self.label_accuracy.setText(f"Accuracy: {accuracy}%")
+    else:
+        self.label_coords.setText("Offset: (0, 0)")
+        self.label_accuracy.setText("Accuracy: 0%")
 
-        rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb.shape
-        img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+    if not self.rotation_active:
+        cv2.circle(display, tuple(Target_Point), 5, (0, 0, 255), -1)
+        if confirmed_center:
+            cv2.circle(display, confirmed_center, 5, (0, 255, 0), -1)
+            cv2.line(display, tuple(Target_Point), confirmed_center, (255, 0, 0), 2)
 
-        pixmap = QPixmap.fromImage(img)
-        self.image_label.setPixmap(pixmap)
+    wafer_type = "-"
+    if has_f1 and has_f2:
+        wafer_type = "P100"
+    elif has_f1:
+        wafer_type = "P111"
 
-        zoom_size = 100
-        half = zoom_size // 2
-        cx, cy = Target_Point
+    self.label_wafer_type.setText(f"Wafer Type: {wafer_type}")
 
-        x1 = max(0, cx - half)
-        y1 = max(0, cy - half)
-        x2 = min(display.shape[1], cx + half)
-        y2 = min(display.shape[0], cy + half)
+    rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
+    h, w, ch = rgb.shape
+    img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
 
-        zoom_crop = display[y1:y2, x1:x2]
+    pixmap = QPixmap.fromImage(img)
+    self.image_label.setPixmap(pixmap)
 
-        if zoom_crop.size > 0:
-            zoomed = cv2.resize(zoom_crop, (400, 300), interpolation=cv2.INTER_NEAREST)
-            zoomed_rgb = cv2.cvtColor(zoomed, cv2.COLOR_BGR2RGB)
+    zoom_size = 100
+    half = zoom_size // 2
+    cx, cy = Target_Point
 
-            if hasattr(self, 'zoom_window') and self.zoom_window:
-                self.zoom_window.update_zoom(zoomed_rgb)
+    x1 = max(0, cx - half)
+    y1 = max(0, cy - half)
+    x2 = min(display.shape[1], cx + half)
+    y2 = min(display.shape[0], cy + half)
 
+    zoom_crop = display[y1:y2, x1:x2]
+
+    if zoom_crop.size > 0:
+        zoomed = cv2.resize(zoom_crop, (400, 300), interpolation=cv2.INTER_NEAREST)
+        zoomed_rgb = cv2.cvtColor(zoomed, cv2.COLOR_BGR2RGB)
+
+        if hasattr(self, 'zoom_window') and self.zoom_window:
+            self.zoom_window.update_zoom(zoomed_rgb)
     def keyPressEvent(self, event):
         key = event.key()
         if key == Qt.Key_F1:
