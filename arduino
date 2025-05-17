@@ -12,7 +12,7 @@
 #define STEP_R 9
 #define EN_R 10
 
-#define STEP_DELAY 800  // 마이크로초 단위
+#define STEP_DELAY 800   // 마이크로초 단위
 #define R_STEP_DELAY 8000 // rotation
 
 bool ready_for_command = false;
@@ -50,6 +50,7 @@ void loop() {
         ready_for_command = true;
       } else {
         Serial.println("[Arduino] Invalid input (too short)");
+        Serial.println("DONE");   // ★ 파싱 에러도 DONE 출력
         input = "";
       }
     } else {
@@ -61,6 +62,7 @@ void loop() {
 void processCommand(String cmd) {
   if (cmd == "HOME") {
     Serial.println("[Arduino] HOMING triggered");
+    Serial.println("DONE"); // ★ HOME 명령도 반드시 DONE 출력
     return;
   }
 
@@ -100,6 +102,7 @@ void processCommand(String cmd) {
   } else {
     Serial.print("[Arduino] Parse error: ");
     Serial.println(cmd);
+    Serial.println("DONE"); // ★ 파싱 에러도 DONE 출력
   }
 }
 
