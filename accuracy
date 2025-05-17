@@ -228,7 +228,7 @@ class MainWindow(QMainWindow):
             background: transparent;
             border: none;
         """)
-        self.label_target_degree = QLabel(f"Target Degree:{Target_degree}°")
+        self.label_target_degree = QLabel(f"Target Deg.:{Target_degree}°")
         self.label_angle_error = QLabel("Angle_Err:0°")
         for lbl in [self.label_wafer_type, self.label_target_point, self.label_coords,
                     self.label_target_degree, self.label_angle_error]:
@@ -290,6 +290,9 @@ class MainWindow(QMainWindow):
         self.show()
         asyncio.create_task(self.serial_setup())
         self.state = "Standby"
+
+    def update_target_point_label(self):
+        self.label_target_point.setText(f"Target Point:\n({Target_Point[0]}, {Target_Point[1]})")
 
 
     def setup_tabs(self):
@@ -376,15 +379,11 @@ class MainWindow(QMainWindow):
                 self.align_bar.setValue(100)
                 return
 
-            # 초기 오프셋: 시작 시점의 dx, dy (거리)
             ox, oy = self.initial_offset
 
-            # 시작 거리(유클리드 거리)
             start_distance = (ox ** 2 + oy ** 2) ** 0.5
-            # 현재 남은 거리(유클리드 거리)
             current_distance = (dx ** 2 + dy ** 2) ** 0.5
 
-            # 시작 거리와 현재 거리 모두 0일 경우 100%, 아니면 비율로
             if start_distance == 0:
                 prog = 100
             else:
@@ -418,7 +417,7 @@ class MainWindow(QMainWindow):
         global Target_degree
         Target_degree = degree
         log(f"[Angle] Set Target_degree: {Target_degree:.0f}°", self)
-        self.label_target_degree.setText(f"Target Degree: {Target_degree:.0f}°")
+        self.label_target_degree.setText(f"Target Deg.: {Target_degree:.0f}°")
         self.update_state("Standby")
 
     def closeEvent(self, event):
@@ -774,6 +773,8 @@ class MainWindow(QMainWindow):
             log(f"[TARGET] TARGET_POINT reset to center → {Target_Point}", self)
             self.label_state.setText("Status: STANDBY")
             self.label_message.setText("Standby")
+            self.update_target_point_label()
+
 
     def move_home(self):
         global confirmed_center, home_mode, send_enabled, align_done, rotation_done
@@ -814,6 +815,7 @@ class MainWindow(QMainWindow):
 
             if 0 <= x < self.image_label.width() and 0 <= y < self.image_label.height():
                 Target_Point = [int(x), int(y)]
+                self.update_target_point_label()
                 log(f"[TARGET] TARGET_POINT set → {Target_Point}", self)
 
                 last_sent_command = ""
@@ -1297,6 +1299,8 @@ class VariableTab(QWidget):
                 if str(new_val) != old_val:
                     globals()[name] = new_val
                     changes.append(f"{name} changed from {old_val} to {new_val}.")
+                    if name == "Target_Point":
+                        self.main_window.update_target_point_label()
             update_variable("HOME_DXDY", eval)
             update_variable("Target_Point", eval)
             update_variable("PIXEL_TO_STEP", eval)
