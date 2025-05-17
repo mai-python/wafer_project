@@ -12,7 +12,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from datetime import datetime
 import matplotlib.pyplot as plt
-model = YOLO("C:\\Users\\Mai\\Desktop\\wafer_project\\v8m960best.pt") # best.pt check
+model = YOLO("C:\\Users\\Mai\\Desktop\\wafer_project\\best.pt") # best.pt check
 FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
 HOME_DXDY = (556, 188)
@@ -21,7 +21,7 @@ PIXEL_TO_STEP = {'x': 33.0, 'y': 45.65}
 MAX_STEPS = 32000
 CAMERA_INDEX = 0
 BAUDRATE = 9600
-SERIAL_PORT = "COM7" #Arduino IDE > TOOL > PORT 확인 필수
+SERIAL_PORT = "COM7" #'Arduino IDE'들어가서 PORT 확인 필수
 STABLE_REQUIRED = 3
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE, FONT_THICKNESS = 0.6, 2
@@ -47,6 +47,7 @@ fixed_f1_box = fixed_f2_box = None
 corrected_box = []
 align_done = False
 rotation_done = False
+
 def show_warning(self, title, message):
     warning = QMessageBox(self)
     warning.setIcon(QMessageBox.Warning)
@@ -108,15 +109,25 @@ def detect_yolo_center(frame):
     return None
 
 def calculate_angle(pt1, pt2):
+    # dx = pt2[0] - pt1[0]
+    # dy = pt2[1] - pt1[1]
+    # angle = np.degrees(np.arctan2(dy, dx))
+    # return angle + 360 if angle < 0 else angle
     dx = pt2[0] - pt1[0]
     dy = pt2[1] - pt1[1]
-    angle = np.degrees(np.arctan2(dy, dx))
-    return angle + 360 if angle < 0 else angle
+    raw = np.degrees(np.arctan2(dy, dx))
+    if raw < 0:
+        raw += 360
+    return (180 - raw) % 360
 
 def calculate_rotation(current_angle, target_angle):
-    dR = (target_angle - current_angle + 540) % 360 - 180
+    # dR = (target_angle - current_angle + 540) % 360 - 180
+    # diR = 1
+    # stR = max(1, min(int(abs(dR) * DEGREE_TO_STEP), MAX_ROTATION_STEP))
+    # return diR, stR
+    dR = (target_angle - current_angle + 360) % 360
     diR = 1
-    stR = max(1, min(int(abs(dR) * DEGREE_TO_STEP), MAX_ROTATION_STEP))
+    stR = max(1, min(int(dR * DEGREE_TO_STEP), MAX_ROTATION_STEP))
     return diR, stR
 
 def calculate_steps(from_point, to_point):
@@ -160,6 +171,7 @@ class MainWindow(QMainWindow):
         self.cap.set(3, FRAME_WIDTH) 
         self.cap.set(4, FRAME_HEIGHT)
 
+        self.summary_type_inited = {"P100": False, "P111": False}
         self.zoom_window = None 
         self.log_window = LogWindow() 
         self.rotation_active = False 
@@ -255,6 +267,7 @@ class MainWindow(QMainWindow):
         self.setMouseTracking(True)
         self.show()
         asyncio.create_task(self.serial_setup())
+        self.state = "STANDBY"
 
 
     def setup_tabs(self):
@@ -300,6 +313,11 @@ class MainWindow(QMainWindow):
 
     def start_auto_align(self):
         global auto_mode, rotation_done, align_done
+        if send_enabled or self.rotation_active or home_mode:
+            log("[ERROR] Cannot start AUTO now", self)
+            self.show_warning("Operation Not Allowed", "AUTO cannot be excuted at this time")
+            return
+        self.update_state("AUTO")
         rotation_done = align_done = False
         self.reset_progress()
         auto_mode = True
@@ -341,47 +359,65 @@ class MainWindow(QMainWindow):
             prog = max(0, min(1, 1 - remain / full)) * 100
             self.align_bar.setValue(int(min(prog, 99)))
 
-        elif mode == "rotation":
-            if rotation_done:
-                self.rotation_bar.setValue(100)
-                return
+        # elif mode == "rotation":
+        #     if rotation_done:
+        #         self.rotation_bar.setValue(100)
+        #         return
 
-            rot_prog = max(0, min(1, 1 - angle_error / self.initial_angle)) * 100
-            self.rotation_bar.setValue(int(min(rot_prog, 99)))
+        #     rot_prog = max(0, min(1, 1 - angle_error / self.initial_angle)) * 100
+        #     self.rotation_bar.setValue(int(min(rot_prog, 99)))
 
     def reset_progress(self):
         self.align_bar.setValue(0)
         self.rotation_bar.setValue(0)
 
     def set_target_degree(self):
-        degree, ok = QInputDialog.getDouble(self, "SETTING", "INPUT DEGREE", decimals=1, min=0, max=360)
-        if ok:
-            self.reset_progress()
-            global Target_degree
-            Target_degree = degree
-            log(f"[ROTATION] Set TARGET_DEGREE: {Target_degree:.1f}°", self)
-            self.label_message.setText("TARGET_DEGREE set")
+        if send_enabled or auto_mode or home_mode or self.rotation_active:
+            log("[ERROR] Cannot set TARGET_DEGREE during active operation", self)
+            show_warning(self,
+                         "Operation Not Allowed",
+                         "Cannot set target angle while another operation is in progress.")
+            return
+
+        degree, ok = QInputDialog.getDouble(
+            self,
+            "SETTING",
+            "INPUT DEGREE",
+            decimals=1,
+            min=0,
+            max=360
+        )
+        if not ok:
+            return
+
+        self.reset_progress()
+        global Target_degree
+        Target_degree = degree
+        log(f"[ROTATION] Set TARGET_DEGREE: {Target_degree:.1f}°", self)
+        self.update_state("STANDBY")
 
     def closeEvent(self, event):
-        reply = QMessageBox.question(self, "Exit", "Do you want to save the log and summary before exiting?", QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+        reply = QMessageBox.question(
+            self,
+            "Exit",
+            "Do you want to save the log and summary before exiting?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+        )
         if reply == QMessageBox.Yes:
-            if hasattr(self, 'log_window') and self. log_window:
+            try:
                 self.log_window.save_log_txt()
-            if self.log_window.isVisible():
-                self.log_window.close()
+            except Exception as e:
+                QMessageBox.critical(self, "Save Error", f"Failed to save logs:\n{e}")
             event.accept()
         elif reply == QMessageBox.No:
-            event.accept()
-            if self.log_window.isVisible():
-                self.log_window.close()
             event.accept()
         else:
             event.ignore()
 
     def set_waiting(self):
-        self.label_state.setText("Status:\nALIGN_STANDBY")
+        self.label_state.setText("Status:\nSTANDBY")
         if not align_done:
-            self.label_state.setText("Status:\nALIGN_STANDBY")
+            self.label_state.setText("Status:\nSTANDBY")
 
     def show_graph_tab(self):
         if self.tabs.indexOf(self.graph_tab) == -1:
@@ -431,28 +467,32 @@ class MainWindow(QMainWindow):
         if command == last_sent_command and not force_send and not critical_stop:
             return
 
-        if send_enabled:
-            log(f"[ALIGN] Sending ALIGN command: {command}", self)
-
         sending_command = True
         awaiting_done = True
-        try:
+
+        if home_mode:
+            self.label_state.setText("Status: HOMING")
+        elif command == "STOP_ALIGNMENT":
+            self.label_state.setText("Status: ALIGN_STOPPING")
+        else:
             actual = command
             if command.upper() == "STOP" or command == "STOP_ALIGNMENT":
                 actual = "0,0,0,0,0,0"
 
-            if home_mode:
-                self.label_state.setText("Status: HOMING")
-            elif command == "STOP_ALIGNMENT":
-                self.label_state.setText("Status:\nALIGN_STOPPING")
-            elif actual == "0,0,0,0,0,0":
-                self.label_state.setText("Status: STOPPING")
+            parts = actual.split(",")
+            if len(parts) == 6 and (int(parts[4]) != 0 or int(parts[5]) != 0):
+                self.label_state.setText("Status: ROTATING")
+                log(f"[ROTATION] Sending ROTATION command: {actual}", self)
             else:
                 self.label_state.setText("Status: ALIGNING")
+                log(f"[ALIGN] Sending ALIGN command: {actual}", self)
 
-            self.ser_writer.write((actual + "\n").encode())
+            command = actual
+
+        try:
+            self.ser_writer.write((command + "\n").encode())
             await self.ser_writer.drain()
-            last_sent_command = actual
+            last_sent_command = command
             force_send = False
 
             while True:
@@ -463,11 +503,11 @@ class MainWindow(QMainWindow):
                         break
                 except asyncio.TimeoutError:
                     if home_mode:
-                        self.label_state.setText("Status:\nHOMING_TIMEOUT")
+                        self.label_state.setText("Status: HOMING_TIMEOUT")
                     elif command == "STOP_ALIGNMENT":
-                        self.label_state.setText("Status:\nALIGN_STOP_TIMEOUT")
+                        self.label_state.setText("Status: ALIGN_STOP_TIMEOUT")
                     else:
-                        self.label_state.setText("Status:\nCMD_TIMEOUT")
+                        self.label_state.setText("Status: CMD_TIMEOUT")
                     break
 
         except Exception as e:
@@ -483,64 +523,103 @@ class MainWindow(QMainWindow):
                 home_mode = False
                 send_enabled = False
 
-            elif command == "STOP_ALIGNMENT":
-                self.label_state.setText("Status: Standby")
-                self.label_message.setText("STANDBY")
-
+            elif last_sent_command == "0,0,0,0,0,0":
+                self.label_state.setText("Status: STANDBY")
             else:
-                if last_sent_command == "0,0,0,0,0,0":
-                    self.label_state.setText("Status: CMD_STOPPED")
-                    self.reset_timer.start(1000)
+                parts = last_sent_command.split(",")
+                if len(parts) == 6 and (int(parts[4]) != 0 or int(parts[5]) != 0):
+                    self.label_state.setText("Status: ROTATION_STEP_DONE")
                 else:
-                    if "0,0,0,0,1," in last_sent_command:
-                        self.label_state.setText("Status:\nROTATION_STEP_DONE")
-                    else:
-                        self.label_state.setText("Status:\nALIGN_STEP_DONE")
-                    self.reset_timer.start(2000)
+                    self.label_state.setText("Status: ALIGN_STEP_DONE")
 
-    def toggle_send(self):
+
+    def update_state(self, new_state):
+        self.state = new_state
+        self.label_state.setText(f"Status: {new_state}")
+        if new_state == "STANDBY":
+            self.label_message.setText("STANDBY")
+        elif new_state == "ALIGNING":
+            self.label_message.setText("ALIGNING...")
+        elif new_state == "ROTATING":
+            self.label_message.setText("ROTATING...")
+        elif new_state == "HOMING":
+            self.label_message.setText("HOMING...")
+        elif new_state == "AUTO":
+            self.label_message.setText("AUTO MODE")
+        elif new_state == "MANUAL":
+            self.label_message.setText("Click to set TARGET")
+
+    def toggle_send(self):  # ALIGN 함수
         global send_enabled, stable_count, Target_Point, auto_mode, align_done, rotation_done
-        align_done = rotation_done = False
-        self.reset_progress() 
-        send_enabled = not send_enabled
-        auto_mode = False
+
+        if self.rotation_active or auto_mode or home_mode:
+            log("[ERROR] Cannot start ALIGN during other operation", self)
+            self.show_warning("Operation Not Allowed", "ALIGN cannot be excuted at this time")
+            return
 
         if send_enabled:
-            log(f"[ALIGN] ALIGN started", self)
-            stable_count = 0
-            self.warned_once = False
-            if confirmed_center: 
-                initial_dx = Target_Point[0] - confirmed_center[0]
-                initial_dy = Target_Point[1] - confirmed_center[1]
-                self.initial_offset = (abs(initial_dx), abs(initial_dy))
-            else:
-                self.initial_offset = (FRAME_WIDTH, FRAME_HEIGHT)
-
-            self.label_state.setText("Status: ALIGNING")
-            self.label_message.setText("ALIGNING...")
-        else:
-            self.label_state.setText("Status: Standby") 
-            self.label_message.setText(" STANDBY ")
+            send_enabled = False
+            self.reset_progress()
+            self.update_state("STANDBY")
             asyncio.create_task(self.send_serial_command("STOP_ALIGNMENT"))
-            log(f"[ALIGN] ALIGN stopped", self)
+            log("[ALIGN] ALIGN stopped", self)
+            return
+
+        align_done = rotation_done = False
+        self.reset_progress()
+        send_enabled = True
+        auto_mode = False
+
+        log("[ALIGN] ALIGN started", self)
+        stable_count = 0
+        self.warned_once = False
+        if confirmed_center:
+            dx0 = abs(Target_Point[0] - confirmed_center[0])
+            dy0 = abs(Target_Point[1] - confirmed_center[1])
+            self.initial_offset = (dx0, dy0)
+        else:
+            self.initial_offset = (FRAME_WIDTH, FRAME_HEIGHT)
+
+        self.update_state("ALIGNING")
 
     async def start_rotation(self):
-        global angle, Target_degree, angle, rotation_done
-        log("[ROTATION] ROTATION started", self)
+        global angle, rotation_done
+        if send_enabled or auto_mode or home_mode or self.rotation_active:
+            log("[ERROR] Cannot start ROTATION during other operation", self)
+            self.show_warning("Operation Not Allowed", "Rotation cannot be executed at this time.")
+            return
+
+        # rotation_done = False
+        # self.rotation_active = True
+        # self.update_state("ROTATING")
+        # log("[ROTATION] Rotation started", self)
+
+        # while True:
+        #     await asyncio.sleep(0.2)
+        #     ret, frame = self.cap.read()
+        #     if not ret:
+        #         continue
+        start_ang = angle
+        total = (Target_degree - start_ang) % 360
+        if total == 0:
+            total = 360
+        self.rotation_start = start_ang
+        self.rotation_total = total
+
+        rotation_done = False
         self.rotation_active = True
-        self.label_message.setText("")
-        self.label_state.setText("Status: ROTATIONING")
+        self.update_state("ROTATING")
+        log("[ROTATION] Rotation started", self)
 
         while True:
             await asyncio.sleep(0.2)
-
             ret, frame = self.cap.read()
             if not ret:
                 continue
 
+            # ─── YOLO로 F1·웨이퍼 중심 검출 ───
             results = model(frame)
-            f1_center, wafer_center = None, None
-
+            f1_center = wafer_center = None
             for box in results[0].boxes.data:
                 x1, y1, x2, y2, conf, cls = box.tolist()
                 label = results[0].names[int(cls)]
@@ -549,49 +628,73 @@ class MainWindow(QMainWindow):
                     wafer_center = (cx, cy)
                 elif label == "F1":
                     f1_center = (cx, cy)
-
             if not f1_center or not wafer_center:
-                log("[DEBUG] CAN'T FIND WAFER_CENTER → DO NOT ROTATE", self)
+                log("[DEBUG] Can't find both F1 and wafer center → skipping rotation step", self)
                 continue
 
+            # angle = calculate_angle(f1_center, wafer_center)
+            # diff = (Target_degree - angle + 540) % 360 - 180
+            # angle_error = abs(diff)
+
+            # self.label_angle.setText(f"Angle: {angle:.2f}°")
+            # self.label_angle_error.setText(f"Angle_Err: {angle_error:.2f}°")
+
+            # if angle_error < TOLERANCE_R:
+            #     rotation_done = True
+            #     log("[ROTATION] Rotation complete", self)
+            #     await self.send_serial_command("STOP")
+            #     self.rotation_active = False
+            #     self.update_state("STANDBY")
+            #     self.update_points_after_rotation(frame)
+            #     break
+            # else:
+            #     diR, stR = calculate_rotation(angle, Target_degree)
+            #     command = f"0,0,0,0,{diR},{stR}"
+            #     log(f"[ROTATION] Sending step command: {command}", self)
+            #     await self.send_serial_command(command)
             angle = calculate_angle(f1_center, wafer_center)
-            diff = (Target_degree - angle + 540) % 360 - 180
+            diff  = (Target_degree - angle + 540) % 360 - 180
             angle_error = abs(diff)
 
+            # ③ 프로그레스 계산 (0→360 구간 그대로 반영)
+            traveled = (angle - self.rotation_start + 360) % 360
+            prog     = min(traveled / self.rotation_total, 1.0) * 100
+            self.rotation_bar.setValue(int(prog))
+
+            # ④ UI 업데이트
             self.label_angle.setText(f"Angle: {angle:.2f}°")
             self.label_angle_error.setText(f"Angle_Err: {angle_error:.2f}°")
 
+            # ⑤ 완료 판정
             if angle_error < TOLERANCE_R:
-                rotation_done = True    
-                log("[ROTATION] ROTATION complete", self)
+                rotation_done = True
+                log("[ROTATION] Rotation complete", self)
                 await self.send_serial_command("STOP")
                 self.rotation_active = False
+                self.update_state("STANDBY")
                 self.update_points_after_rotation(frame)
                 break
             else:
+                # ⑥ 계속 회전 명령
                 diR, stR = calculate_rotation(angle, Target_degree)
                 command = f"0,0,0,0,{diR},{stR}"
-                await self.send_serial_command(command)  
+                log(f"[ROTATION] Sending step command: {command}", self)
+                await self.send_serial_command(command)
 
     def update_points_after_rotation(self, frame):
         global confirmed_center
         results = model(frame)
         wafer_center = None
-        f1_center = None
         for box in results[0].boxes.data:
             x1, y1, x2, y2, conf, cls = box.tolist()
             label = results[0].names[int(cls)]
-            cx = int((x1 + x2) / 2)
-            cy = int((y1 + y2) / 2)
             if label in ["P100", "P111"]:
+                cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
                 wafer_center = (cx, cy)
-            elif label == "F1":
-                f1_center = (cx, cy)
-
         if wafer_center:
-            confirmed_center = wafer_center 
-            log(f"[UPDATED POINTS] confirmed_center: {confirmed_center}", self)
-            self.label_state.setText("Status:\nALIGN_STANDBY")  
+            confirmed_center = wafer_center
+            log(f"[ROTATION] Updated center: {confirmed_center}", self)
+            self.update_state("STANDBY")  
 
     def reload_yolo_model(self):
         global model
@@ -675,21 +778,30 @@ class MainWindow(QMainWindow):
             self.label_message.setText("STANDBY")
 
     def move_home(self):
-        global confirmed_center, home_mode, dx, dy, send_enabled, align_done, rotation_done
+        global confirmed_center, home_mode, send_enabled, align_done, rotation_done
+
         align_done = rotation_done = False
         self.reset_progress()
-        if confirmed_center and not awaiting_done and not sending_command:
-            home_mode = True
-            self.label_message.setText("ALIGNING")
-            log("[HOMING] Start HOMING", self)
-            dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, HOME_DXDY)
-            if dx_steps + dy_steps < 10:
-                self.label_state.setText("Status: HOMING_DONE")
-                log("[HOMING] HOMING skipped", self)
-                send_enabled = False
-            else:
-                asyncio.create_task(self.send_serial_command(command))
-                log(f"[HOMING] Send command: {command}", self)
+
+        if not confirmed_center \
+        or awaiting_done or sending_command \
+        or send_enabled or auto_mode \
+        or self.rotation_active:
+            return
+
+        home_mode = True
+        self.update_state("HOMING")
+        log("[HOMING] Start HOMING", self)
+
+        dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, HOME_DXDY)
+        if dx_steps + dy_steps < 10:
+            self.update_state("STANDBY")
+            log("[HOMING] HOMING skipped", self)
+            send_enabled = False
+        else:
+            asyncio.create_task(self.send_serial_command(command))
+            log(f"[HOMING] Send command: {command}", self)
+
         asyncio.create_task(self.move_home_loop())
 
     def mousePressEvent(self, event):
@@ -763,6 +875,17 @@ class MainWindow(QMainWindow):
             wafer_type = "P111"
         draw_yolo_boxes(display, results, self, wafer_type)
 
+        if wafer_type in ("P100", "P111") and not self.summary_type_inited[wafer_type]: # self.summary_type_inited 초기화
+            detection_stats[wafer_type] = {cls: [] for cls in detection_stats[wafer_type]}
+            self.summary_type_inited[wafer_type] = True
+
+        if wafer_type in ["P100", "P111"]: # summary png 저장 변수
+            for box in results[0].boxes.data:
+                _, _, _, _, conf, cls = box.tolist()
+                label = results[0].names[int(cls)]
+                if label in detection_stats[wafer_type]:
+                    detection_stats[wafer_type][label].append(conf)
+
         wafer_center = None # wafer_center calculate
         f1_center = None
         for box in results[0].boxes.data:
@@ -834,19 +957,11 @@ class MainWindow(QMainWindow):
                     asyncio.create_task(self.send_serial_command(command))
                     force_send = False
 
-            # if send_enabled and stable_count < STABLE_REQUIRED \
-            #     and not awaiting_done and not sending_command \
-            #     and command is not None \
-            #     and (command != last_sent_command or force_send):
-            #         asyncio.create_task(self.send_serial_command(command))
-            #         force_send = False
         else:
             self.label_coords.setText("Offset: -")
             self.label_accuracy.setText("Accuracy: 0%")
             if not (align_done or rotation_done):
                 self.reset_progress()
-            #self.update_progress(self.initial_offset[0], self.initial_offset[1],
-                                 #angle_error_val, mode="align") # 주석처리 이유: confirmed_center가 사라지면 프로그램 강제종료시킴
         
         if not self.rotation_active and not home_mode:
             cv2.circle(display, tuple(Target_Point), 5, (0, 0, 255), -1)
@@ -859,7 +974,6 @@ class MainWindow(QMainWindow):
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
-        #self.image_label.setPixmap(QPixmap.fromImage(img))
 
         pixmap = QPixmap.fromImage(img)
         self.image_label.setPixmap(pixmap)
@@ -937,21 +1051,17 @@ class LogWindow(QWidget):
         super().__init__()
         self.setWindowTitle("LOG")
         self.setGeometry(200, 200, 600, 400)
-
         self.logs = []
-
         self.text_edit = QTextEdit()
         self.text_edit.setReadOnly(True)
-
         self.filter_box = QComboBox()
-        self.filter_box.addItems(["ALL", "ALIGN", "ROTATION", "DEBUG", "CHANGED", "ERROR", "Status"]) #추후에 추가
+        self.filter_box.addItems(["ALL", "ALIGN", "ROTATION", "CHANGED", "ERROR", "Status"]) #추후에 추가
         self.filter_box.currentTextChanged.connect(self.apply_filter)
-
         layout = QVBoxLayout()
         layout.addWidget(self.filter_box)
         layout.addWidget(self.text_edit)
         self.setLayout(layout)
-
+    
     def append_log(self, msg):
         self.logs.append(msg)
         self.apply_filter()
@@ -965,62 +1075,109 @@ class LogWindow(QWidget):
         self.text_edit.verticalScrollBar().setValue(
             self.text_edit.verticalScrollBar().maximum()
         )
-    def save_detection_summary_chart(wafer_type, stats, timestamp): #png(yolo)저장함수
-        classes = list(stats.keys())
-        counts = [len(stats[cls]) for cls in classes]
-        confidences = [
-            round(sum(stats[cls]) / len(stats[cls]), 2) if stats[cls] else 0
-            for cls in classes
-        ]
-        fig, ax1 = plt.subplots(figsize=(8, 5))
-        ax1.bar(classes, counts, label="Detection Count")
-        ax1.set_ylabel("Count")
-        ax1.set_ylim(0, max(counts) + 1)
-
-        ax2 = ax1.twinx()
-        ax2.plot(classes, confidences, marker="o", label="Avg Confidence")
-        ax2.set_ylabel("Confidence")
-        ax2.set_ylim(0, 1)
-
-        for i, (cnt, conf) in enumerate(zip(counts, confidences)):
-            ax1.text(i, cnt + 0.1, str(cnt), ha="center", va="bottom", fontsize=9)
-            ax2.text(i, conf + 0.02, f"{conf:.2f}",
-                     ha="center", va="bottom", fontsize=9)
-
-        plt.title(f"{wafer_type} Detection Summary ({timestamp})")
-        fig.tight_layout()
-        png_filename = f"{wafer_type}_{timestamp}_detection_summary.png"
-        plt.savefig(png_filename)
-        plt.close()
 
     def save_log_txt(self):
         try:
+            target_dir = r"C:\Users\Mai\Desktop\wafer_project\log and summary"
+            os.makedirs(target_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_filename = f"log_{timestamp}.txt"
+
+            log_filename = os.path.join(target_dir, f"log_{timestamp}.txt")
             with open(log_filename, "w", encoding="utf-8") as f:
-                f.write(self.text_edit.toPlainText())
+                f.write("\n".join(self.logs))
 
             for wafer_type, stats in detection_stats.items():
-                LogWindow.save_detection_summary_chart(wafer_type, stats, timestamp)
+                LogWindow.save_detection_summary_chart(
+                    wafer_type, stats, timestamp, target_dir
+                )
 
-            QMessageBox.information(self, "Saved",
-                                    f"Log({log_filename}) and detection summary Save complete.")
+            QMessageBox.information(
+                self, "Saved",
+                f"Logs → {log_filename}\n"
+                f"Charts saved in {target_dir}"
+            )
         except Exception as e:
-            QMessageBox.critical(self, "Error",
-                                 f"Save failed:\n{e}")
-class GraphCanvas(FigureCanvas):
+            QMessageBox.critical(self, "Save Error", f"Failed to save logs:\n{e}")
+
+    def save_detection_summary_chart(wafer_type, stats, timestamp, target_dir):
+
+        # classes     = list(stats.keys())
+        # counts      = [len(stats[c]) for c in classes]
+        # confidences = [
+        #     round(sum(stats[c]) / len(stats[c]), 2) if stats[c] else 0
+        #     for c in classes
+        # ]
+
+        # fig, ax1 = plt.subplots(figsize=(8,5))
+
+        # ax1.set_title(f"{wafer_type} Detection Summary", pad=20, fontsize=14)
+
+        # ax1.bar(classes, counts)
+        # ax1.set_ylabel("Count")
+
+        # ax2 = ax1.twinx()
+        # ax2.plot(classes, confidences, marker="o", color="red")
+        # ax2.set_ylabel("Confidence")
+
+        # for i, conf in enumerate(confidences):
+        #     ax2.text(i, conf + 0.02, f"{conf:.2f}",
+        #             ha="center", va="bottom", fontsize=9)
+
+        # fig.tight_layout(rect=[0, 0, 1, 0.92])
+
+        # png_name      = f"{wafer_type}_{timestamp}_detection_summary.png"
+        # full_png_path = os.path.join(target_dir, png_name)
+        # plt.savefig(full_png_path)
+        # plt.close()
+        classes = [c for c, lst in stats.items() if lst]
+        if not classes:
+            return  
+
+        counts      = [len(stats[c]) for c in classes]
+        confidences = [round(sum(stats[c]) / len(stats[c]), 2) for c in classes]
+
+        fig, ax1 = plt.subplots(figsize=(8,5))
+        ax1.set_title(f"{wafer_type} Detection Summary", pad=20, fontsize=14)
+        ax1.bar(classes, counts)
+        ax1.set_ylabel("Count")
+
+        ax2 = ax1.twinx()
+        ax2.plot(classes, confidences, marker="o", color="red")
+        ax2.set_ylabel("Confidence")
+
+        # 오탐지 그래프
+        mis = [c for c in classes if c != wafer_type]
+        correct = [c for c in classes if c == wafer_type]
+        ax1.bar(correct,   [len(stats[c]) for c in correct])
+        ax1.bar(mis,       [len(stats[c]) for c in mis], alpha=0.5, hatch='//')
+
+        for i, conf in enumerate(confidences):
+            ax2.text(i, conf + 0.02, f"{conf:.2f}", 
+                    ha="center", va="bottom", fontsize=9)
+
+        fig.tight_layout(rect=[0,0,1,0.92])
+
+        png_name      = f"{wafer_type}_{timestamp}_detection_summary.png"
+        full_png_path = os.path.join(target_dir, png_name)
+        plt.savefig(full_png_path)
+        plt.close()
+
+class GraphCanvas(FigureCanvas): # graph 생성 함수"
     def __init__(self, parent=None):
-        fig = Figure(figsize=(4, 2), dpi=100)
-        self.ax = fig.add_subplot(111)
+        fig = Figure(figsize=(3.5, 1.5), dpi=110) # 그래프 크기(가로세로) dpi: 해상도
+        self.ax = fig.add_subplot(111) # 1행1열 첫 번째 서브플롯
         super().__init__(fig)
         self.setParent(parent)
         self.x_data = list(range(50))
         self.y_data = [0] * 50
-        self.ax.set_ylim(0, 100)
-        self.line, = self.ax.plot(self.x_data, self.y_data, lw=2)
-        self.ax.set_title("ALIGN ACCURACY(%)")
-        self.ax.set_xlabel("FPS(TIME)")
-        self.ax.set_ylabel("ACCURACY")
+        self.ax.set_ylim(0, 100) # Y축 범위 설정 / 정확도 0~100%
+        self.line, = self.ax.plot(self.x_data, self.y_data, lw=2) # x와 y를 연결한 선 그리기
+        self.ax.set_title("ALIGN ACCURACY(%)", fontsize = 6) # 그래프 제목
+        self.ax.set_xlabel("FPS(TIME)", fontsize = 6) # X축 제목
+        self.ax.set_ylabel("ACCURACY", fontsize = 6) # Y축 제목
+        self.ax.tick_params(axis='y', labelsize=10) # Y축 눈금 폰트 크기 10
+
+        fig.tight_layout() # 비율 딱 맞게
 
     def update_plot(self, value):
         self.y_data.pop(0)
@@ -1033,9 +1190,9 @@ class VariableTab(QWidget):
         super().__init__()
         self.main_window = main_window
         self.default_values = {
-            "HOME_DXDY": "(556, 188)",
+            "HOME_DXDY": "(556, 188)", # HOME_DXDY 먼저 수정
             "Target_Point": "[640, 360]",
-            "PIXEL_TO_STEP": "{'x': 33.0, 'y': 45.65}",
+            "PIXEL_TO_STEP": "{'x': 33.0, 'y': 45.65}", 
             "TOLERANCE_PX": "1",
             "TOLERANCE_R": "1",
             "MAX_STEPS": "32000",
@@ -1140,13 +1297,22 @@ class ZoomWindow(QWidget):
 
     def save_log_txt(self):
         try:
-            with open("log.txt", "w", encoding="utf-8") as f:
-                f.write(self.text_edit.toPlainText())
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_filename = f"log_{timestamp}.txt"
+            with open(log_filename, "w", encoding="utf-8") as f:
+                f.write("\n".join(self.logs))
+
             for wafer_type, stats in detection_stats.items():
-                LogWindow.save_detection_summary_chart(wafer_type, stats)
-            QMessageBox.information(self, "Saved", "Log and detection summary saved successfully.")
+                LogWindow.save_detection_summary_chart(wafer_type, stats, timestamp)
+
+            QMessageBox.information(
+                self,
+                "Saved",
+                f"Log saved as {log_filename}\n"
+                f"Summary charts saved as *_{timestamp}_detection_summary.png"
+            )
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save log and detection summary:\n{e}")
+            QMessageBox.critical(self, "Save Error", f"Failed to save logs:\n{e}")
 
 def main():
     app = QApplication(sys.argv)
