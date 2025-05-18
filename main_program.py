@@ -6,13 +6,14 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QTextEdit, QInputDialog, QGroupBox,
     QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QComboBox, QSizePolicy, QLineEdit, QMessageBox, QTabWidget,
-    QAction, QMenu, QSplashScreen, QGridLayout, QProgressBar, QCheckBox
+    QAction, QMenu, QSplashScreen, QGridLayout, QProgressBar, QCheckBox, QFileDialog
 )
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from datetime import datetime
 import matplotlib.pyplot as plt
 import random
+import csv
 
 model = YOLO("C:\\Users\\Mai\\Desktop\\wafer_project\\redline.pt") # best.pt check
 FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
@@ -59,7 +60,7 @@ rotation_accuracy_list = []
 RANDOM_MODE = False
 
 def calculate_rotation_accuracy(angle_error_val, max_error=30):
-    if angle_error_val <= 1.0:
+    if angle_error_val <= 0.1:
         return 100.0
     elif angle_error_val >= max_error:
         return 0.0
@@ -341,13 +342,16 @@ class MainWindow(QMainWindow):
                 "Save Error": "Save Error",
             }
         }
-
+        self.loop_results = []  # [ (loop_idx, pos_acc, rot_acc), ... ]
 
         self.file_menu = menubar.addMenu(self.t("File"))
         self.capture_action = QAction(self.t("Capture"), self)
+        self.save_all_action = QAction("Save", self, triggered=self.save_all)
         self.exit_action = QAction(self.t("Exit"), self, triggered=self.close)
         self.file_menu.addAction(self.capture_action)
+        self.file_menu.addAction(self.save_all_action)
         self.file_menu.addAction(self.exit_action)
+        
         self.capture_action.triggered.connect(self.capture_screenshot)
 
         self.function_menu = menubar.addMenu(self.t("Function"))
@@ -402,8 +406,8 @@ class MainWindow(QMainWindow):
         self.tabs.setTabPosition(QTabWidget.North)
         self.tabs.hide() 
         self.setup_tabs() 
-        self.label_message = QLabel(self.t(" Standby "))
-        self.label_message.setStyleSheet("font-size: 16px; font-weight: bold;")
+        #self.label_message = QLabel(self.t(" Standby "))
+        #self.label_message.setStyleSheet("font-size: 16px; font-weight: bold;")
         self.align_label = QLabel(self.t("POSITION ACCURACY(%)"))
         self.align_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         self.rotation_label = QLabel(self.t("ROTATION ACCURACY(%)"))
@@ -413,7 +417,7 @@ class MainWindow(QMainWindow):
         self.align_bar.setMaximum(100)
         self.rotation_bar.setMaximum(100)
         progress_layout = QVBoxLayout()
-        progress_layout.addWidget(self.label_message)
+        #progress_layout.addWidget(self.label_message)
         progress_layout.addWidget(self.align_label)
         progress_layout.addWidget(self.align_bar)
         progress_layout.addWidget(self.rotation_label)
@@ -421,7 +425,7 @@ class MainWindow(QMainWindow):
         self.progress_widget = QWidget()
         self.progress_widget.setLayout(progress_layout)
         self.progress_widget.setFixedWidth(300)
-        self.label_wafer_type.setText(self.t("Wafer Type") + ": -")
+        self.label_wafer_type.setText(self.t("Wafer Type") + ":\n-")
         self.label_target_point.setText(self.t("Target Point:") + f"\n({Target_Point[0]}, {Target_Point[1]})")
         self.label_coords.setText(self.t("Position_Err") + ":\n" + "(0, 0)")
         self.label_state = QLabel("Status: STANDBY") # Status 추후 삭제
@@ -500,6 +504,22 @@ class MainWindow(QMainWindow):
         asyncio.create_task(self.serial_setup())
         self.state = "Standby"
 
+    def save_all(self):
+        fn = QFileDialog.getSaveFileName(self, "Save Loop Results", "", "CSV Files (*.csv)")[0]
+        if not fn:
+            return
+        with open(fn, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "Loop", "Position Acc (%)", "ΔX (px)", "ΔY (px)",
+                "Rotation Acc (%)", "Angle Err (°)",
+                "P100_F1_Count", "P100_F2_Count", "P100_P100_Count", "P100_P111_Count",
+                "P111_F1_Count", "P111_F2_Count", "P111_P100_Count", "P111_P111_Count"
+            ])
+            for row in self.loop_results:
+                writer.writerow(row)
+        QMessageBox.information(self, "Saved", f"Loop results saved to {fn}")
+
     def toggle_recording(self, checked):
         if checked:
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
@@ -509,14 +529,14 @@ class MainWindow(QMainWindow):
                 filename, fourcc, 30.0, (FRAME_WIDTH, FRAME_HEIGHT)
             )
             self.recording = True
-            self.label_message.setText(self.t("Recording started"))
+            #self.label_message.setText(self.t("Recording started"))
             log(f"[RECORD] Recording started: {filename}", self)
         else:
             if self.video_writer:
                 self.video_writer.release()
                 self.video_writer = None
             self.recording = False
-            self.label_message.setText("Recording completed")
+            #self.label_message.setText("Recording completed")
             log(self.t(f"[RECORD] Recording completed"), self)
 
     def set_language(self, lang):
@@ -561,7 +581,7 @@ class MainWindow(QMainWindow):
             self.t_button.setText(self.t("Align"))
             self.align_label.setText(self.t("POSITION ACCURACY(%)"))
             self.rotation_label.setText(self.t("ROTATION ACCURACY(%)"))
-            self.label_message.setText(self.t("Standby"))
+            #self.label_message.setText(self.t("Standby"))
             self.label_wafer_type.setText(self.t("Wafer Type") + ": -")
             self.label_coords.setText(self.t("Position_Err") + ":\n" + "(0, 0)")
             self.label_target_point.setText(self.t("Target Point") + f":\n({Target_Point[0]}, {Target_Point[1]})")
@@ -605,7 +625,7 @@ class MainWindow(QMainWindow):
         self.apply_auto_var_changes()
 
     def set_standby_message(self):
-        self.label_message.setText(self.t("Standby"))
+        #self.label_message.setText(self.t("Standby"))
         self.position_completed_shown = False
         self.rotation_completed_shown = False
 
@@ -705,7 +725,7 @@ class MainWindow(QMainWindow):
             #log("[ERROR] Cannot start AUTO now", self)
             self.show_warning(self.t("Operation Not Allowed", "AUTO cannot be excuted at this time"))
             return
-        self.update_state(self.t("AUTO"))
+        #self.update_state(self.t("AUTO"))
         rotation_done = align_done = False
         self.reset_progress()
         auto_mode = True
@@ -800,7 +820,7 @@ class MainWindow(QMainWindow):
         Target_degree = degree
         log(f"[Angle] Set Target_degree: {Target_degree:.0f}°", self)
         self.label_target_degree.setText(f"Target Deg.: {Target_degree:.0f}°")
-        self.update_state("Standby")
+        #self.update_state("Standby")
 
     def closeEvent(self, event):
         reply = QMessageBox.question(
@@ -840,7 +860,7 @@ class MainWindow(QMainWindow):
         if confirmed_center:
             home_mode = True
             log("[HOMING] Start HOMING", self)
-            self.label_message.setText("HOMING...")
+            #self.label_message.setText("HOMING...")
             retry = 0
             while retry < 10:
                 dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, HOME_DXDY)
@@ -932,21 +952,21 @@ class MainWindow(QMainWindow):
                 else:
                     self.label_state.setText(self.t("Status") + ": " + self.t("ALIGN_STEP_DONE"))
 
-    def update_state(self, new_state):
-        self.state = new_state
-        self.label_state.setText(f"{self.t('Status')}: {self.t(new_state)}")
-        if new_state == "STANDBY":
-            self.label_message.setText(self.t("Standby"))
-        elif new_state == "ALIGNING":
-            self.label_message.setText(self.t("Positioning..."))
-        elif new_state == "ROTATING":
-            self.label_message.setText(self.t("Rotating..."))
-        elif new_state == "DEFAULTING":
-            self.label_message.setText(self.t("DEFAULTING..."))
-        elif new_state == "ALIGN":
-            self.label_message.setText(self.t("Align..."))
-        elif new_state == "Set Target":
-            self.label_message.setText(self.t("Click to Target"))
+    # def update_state(self, new_state):
+    #     self.state = new_state
+    #     self.label_state.setText(f"{self.t('Status')}: {self.t(new_state)}")
+    #     if new_state == "STANDBY":
+    #         self.label_message.setText(self.t("Standby"))
+    #     elif new_state == "ALIGNING":
+    #         self.label_message.setText(self.t("Positioning..."))
+    #     elif new_state == "ROTATING":
+    #         self.label_message.setText(self.t("Rotating..."))
+    #     elif new_state == "DEFAULTING":
+    #         self.label_message.setText(self.t("DEFAULTING..."))
+    #     elif new_state == "ALIGN":
+    #         self.label_message.setText(self.t("Align..."))
+    #     elif new_state == "Set Target":
+    #         self.label_message.setText(self.t("Click to Target"))
 
     def toggle_log_window(self):
         if self.log_window.isVisible():
@@ -966,7 +986,7 @@ class MainWindow(QMainWindow):
         if send_enabled:
             send_enabled = False
             self.reset_progress()
-            self.update_state("STANDBY")
+            #self.update_state("STANDBY")
             asyncio.create_task(self.send_serial_command("STOP_ALIGNMENT"))
             log("[ALIGN] ALIGN stopped", self)
             return
@@ -988,7 +1008,7 @@ class MainWindow(QMainWindow):
         else:
             self.initial_offset = (FRAME_WIDTH, FRAME_HEIGHT)
 
-        self.update_state("ALIGNING")
+        #self.update_state("ALIGNING")
     async def start_rotation(self):
         global angle, rotation_done
         if send_enabled or home_mode or self.rotation_active:
@@ -1005,7 +1025,7 @@ class MainWindow(QMainWindow):
 
         rotation_done = False
         self.rotation_active = True
-        self.update_state("ROTATING")
+        #self.update_state("ROTATING")
         log("[ROTATION] Rotation started", self)
 
         while True:
@@ -1048,7 +1068,7 @@ class MainWindow(QMainWindow):
                 log("[ROTATION] Rotation completed", self)
                 await self.send_serial_command("STOP")
                 self.rotation_active = False
-                self.update_state("STANDBY")
+                #self.update_state("STANDBY")
                 self.update_points_after_rotation(frame)
                 break
             else:
@@ -1071,19 +1091,19 @@ class MainWindow(QMainWindow):
         if wafer_center:
             confirmed_center = wafer_center
             log(f"[ROTATION] Updated center: {confirmed_center}", self)
-            self.update_state("STANDBY")  
+            #self.update_state("STANDBY")  
 
     def reload_yolo_model(self):
         global model
         log("[YOLO] reload model...", self)
-        self.label_message.setText("Initializing model...")
+        #self.label_message.setText("Initializing model...")
         del model
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         model = YOLO("redline.pt")
         log("[YOLO]Successfully reload model", self)
-        self.label_message.setText("Model initialization completed")
+        #self.label_message.setText("Model initialization completed")
 
     async def auto_align_loop(self):
         global auto_mode, send_enabled, home_mode, force_send, confirmed_center
@@ -1094,7 +1114,7 @@ class MainWindow(QMainWindow):
         count = 0
 
         while auto_mode and (AUTO_LOOP_COUNT == 0 or count < AUTO_LOOP_COUNT):
-            # 1) DEFAULT 단계 (초기 위치 복귀)
+            # ── 랜덤 모드 타겟 설정 ──
             if RANDOM_MODE:
                 Target_Point = [
                     random.randint(RANDOM_X_MIN, RANDOM_X_MAX),
@@ -1102,17 +1122,22 @@ class MainWindow(QMainWindow):
                 ]
                 Target_degree = random.uniform(RANDOM_DEG_MIN, RANDOM_DEG_MAX)
                 self.update_target_point_label()
-                self.label_target_degree.setText(self.t("Target Deg.") + f":{Target_degree:.2f}deg")
+                self.label_target_degree.setText(
+                    self.t("Target Deg.") + f": {Target_degree:.1f}°"
+                )
                 log(f"[AUTO] New random target → Point: {Target_Point}, Degree: {Target_degree:.1f}°", self)
+                await asyncio.sleep(0.2)
+
+            # 1) DEFAULT 단계
             if confirmed_center:
                 home_mode = True
-                log("[AUTO] AUTO_DEFAULT", self)
+                log(f"[AUTO] Loop {count+1}: DEFAULT", self)
                 stable_count_default = 0
                 retry = 0
                 while retry < 200:
-                    dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, HOME_DXDY)
+                    dx, dy, dx_s, dy_s, cmd = calculate_steps(confirmed_center, HOME_DXDY)
                     if abs(dx) > TOLERANCE_PX or abs(dy) > TOLERANCE_PX:
-                        await self.send_serial_command(command)
+                        await self.send_serial_command(cmd)
                         await asyncio.sleep(0.05)
                         retry += 1
                     else:
@@ -1120,29 +1145,29 @@ class MainWindow(QMainWindow):
                         if stable_count_default >= STABLE_REQUIRED:
                             break
                         await asyncio.sleep(0.05)
-                    await asyncio.sleep(3.0)
 
-            # 2) ALIGN 단계 (정렬)
-            log("[AUTO] AUTO_ALIGN", self)
+            # 2) ALIGN 단계
+            log(f"[AUTO] Loop {count+1}: ALIGN", self)
             align_done = False
             stable_count = 0
-            retry = 0
             if confirmed_center:
                 dx0 = abs(Target_Point[0] - confirmed_center[0])
                 dy0 = abs(Target_Point[1] - confirmed_center[1])
                 self.initial_offset = (dx0, dy0)
             else:
                 self.initial_offset = (FRAME_WIDTH, FRAME_HEIGHT)
+
+            position_accuracy_list.clear()
+            retry = 0
             while retry < 200:
                 await asyncio.sleep(0.05)
                 if confirmed_center:
-                    dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, Target_Point)
-                    accuracy = calculate_accuracy_px(Target_Point, confirmed_center, initial_offset=self.initial_offset)
-                    position_accuracy_list.append(accuracy)
-                    self.align_bar.setValue(int(accuracy))
+                    dx, dy, dx_s, dy_s, cmd = calculate_steps(confirmed_center, Target_Point)
+                    pos_acc = calculate_accuracy_px(Target_Point, confirmed_center)
+                    position_accuracy_list.append(pos_acc)
+                    self.align_bar.setValue(int(pos_acc))
                     if abs(dx) > TOLERANCE_PX or abs(dy) > TOLERANCE_PX:
-                        await self.send_serial_command(command)
-                        
+                        await self.send_serial_command(cmd)
                     else:
                         stable_count += 1
                         if stable_count >= STABLE_REQUIRED:
@@ -1151,74 +1176,92 @@ class MainWindow(QMainWindow):
                 retry += 1
 
             await self.send_serial_command("STOP_ALIGN")
-            log("[AUTO] AUTO_ALIGN done", self)
-            wait_align_end = 0
-            while not align_done and wait_align_end < 100:
-                await asyncio.sleep(0.05)
-                wait_align_end += 1
-
+            log(f"[AUTO] Loop {count+1}: ALIGN done", self)
             await asyncio.sleep(3.0)
 
-            # 3) ROTATION 단계 (회전)
-            log("[AUTO] AUTO_ROTATION", self)
-            self.label_state.setText("Status:\nAUTO_ROTATING")
-            self.label_message.setText("AUTO_ROTATING")
+            # 3) ROTATION 단계
+            log(f"[AUTO] Loop {count+1}: ROTATION", self)
             rotation_done = False
             self.rotation_active = True
-            angle = 0
-            Target_angle = Target_degree
-            try:
-                while True:
-                    await asyncio.sleep(0.2)
-                    ret, frame = self.cap.read()
-                    if not ret:
-                        continue
+            final_rot_acc = 0.0
+            final_angle_err = 0.0
 
-                    results = model(frame)
-                    f1_center = wafer_center = None
-                    for box in results[0].boxes.data:
-                        x1, y1, x2, y2, conf, cls = box.tolist()
-                        label = results[0].names[int(cls)]
-                        cx, cy = int((x1 + x2)/2), int((y1 + y2)/2)
-                        if label in ["P100", "P111"]:
-                            wafer_center = (cx, cy)
-                        elif label == "F1":
-                            f1_center = (cx, cy)
-                    if not f1_center or not wafer_center:
-                        continue
+            while True:
+                await asyncio.sleep(0.2)
+                ret, frame = self.cap.read()
+                if not ret:
+                    continue
 
-                    angle = calculate_angle(f1_center, wafer_center)
-                    diff = (Target_angle - angle + 540) % 360 - 180
-                    angle_error_val = abs(diff)
-                    rotation_accuracy = calculate_rotation_accuracy(angle_error_val)
-                    rotation_accuracy_list.append(rotation_accuracy)
-                    self.rotation_bar.setValue(int(rotation_accuracy))
+                results = model(frame)
+                f1_c = wafer_c = None
+                for b in results[0].boxes.data:
+                    x1, y1, x2, y2, *_ = b.tolist()
+                    lbl = results[0].names[int(b[5])]
+                    cx, cy = int((x1 + x2)/2), int((y1 + y2)/2)
+                    if lbl in ["P100", "P111"]:
+                        wafer_c = (cx, cy)
+                    elif lbl == "F1":
+                        f1_c = (cx, cy)
+                if not f1_c or not wafer_c:
+                    continue
 
-                    if angle_error_val < TOLERANCE_R:
-                        rotation_done = True
-                        log("[ROTATION] Rotation completed", self)
-                        await self.send_serial_command("STOP")
-                        self.rotation_active = False
-                        self.update_points_after_rotation(frame)
-                        break
-                    else:
-                        diR, stR = calculate_rotation(angle, Target_angle)
-                        command = f"0,0,0,0,{diR},{stR}"
-                        await self.send_serial_command(command)
-            except Exception as e:
-                log(f"[AUTO] Rotation error: {e}", self)
+                cur_ang = calculate_angle(f1_c, wafer_c)
+                diff = (Target_degree - cur_ang + 540) % 360 - 180
+                angle_err = abs(diff)
+                rot_acc = calculate_rotation_accuracy(angle_err)
+
+                self.rotation_bar.setValue(int(rot_acc))
+
+                if angle_err < TOLERANCE_R:
+                    final_rot_acc = rot_acc
+                    final_angle_err = angle_err
+                    await self.send_serial_command("STOP")
+                    self.rotation_active = False
+                    self.update_points_after_rotation(frame)
+                    rotation_done = True
+                    break
+                else:
+                    diR, stR = calculate_rotation(angle, Target_degree)
+                    cmd = f"0,0,0,0,{diR},{stR}"
+                    await self.send_serial_command(cmd)
+
+            # ↪ 결과 기록
+            final_pos_acc = position_accuracy_list[-1] if position_accuracy_list else 0.0
+            # 최종 X,Y 오차 계산
+            final_dx = Target_Point[0] - confirmed_center[0] if confirmed_center else 0
+            final_dy = Target_Point[1] - confirmed_center[1] if confirmed_center else 0
+
+            counts = [
+                len(detection_stats["P100"]["F1"]), len(detection_stats["P100"]["F2"]),
+                len(detection_stats["P100"]["P100"]), len(detection_stats["P100"]["P111"]),
+                len(detection_stats["P111"]["F1"]), len(detection_stats["P111"]["F2"]),
+                len(detection_stats["P111"]["P100"]), len(detection_stats["P111"]["P111"])
+            ]
+
+            self.loop_results.append([
+                count + 1,
+                final_pos_acc,
+                final_dx,
+                final_dy,
+                final_rot_acc,
+                final_angle_err,
+                *counts
+            ])
+            log(f"[AUTO] Loop {count+1} result → "
+                f"PosAcc={final_pos_acc:.2f}%, ΔX={final_dx}, ΔY={final_dy}, "
+                f"RotAcc={final_rot_acc:.2f}%, RotErr={final_angle_err:.2f}°", self)
 
             await asyncio.sleep(3.0)
 
-            # 4) 두 번째 DEFAULT 단계 (최종 위치 복귀)
+            # 4) FINAL DEFAULT
             if confirmed_center:
                 home_mode = True
                 stable_count_default = 0
                 retry = 0
                 while retry < 200:
-                    dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, HOME_DXDY)
+                    dx, dy, dx_s, dy_s, cmd = calculate_steps(confirmed_center, HOME_DXDY)
                     if abs(dx) > TOLERANCE_PX or abs(dy) > TOLERANCE_PX:
-                        await self.send_serial_command(command)
+                        await self.send_serial_command(cmd)
                         await asyncio.sleep(0.05)
                         retry += 1
                     else:
@@ -1227,32 +1270,12 @@ class MainWindow(QMainWindow):
                             break
                         await asyncio.sleep(0.05)
 
-            # === 여기서 둘 다 동시에 초기화 ===
-            position_accuracy_list.clear()
-            rotation_accuracy_list.clear()
-            self.align_bar.setValue(0)
-            self.rotation_bar.setValue(0)
-
-            await asyncio.sleep(3.0)
-            self.label_message.setText("Waiting for next Wafer")
-            self.label_state.setText("Status: AUTO_WAITING")
-
             count += 1
 
-        # 루프 빠져나올 때도 확실하게 리셋
-        position_accuracy_list.clear()
-        rotation_accuracy_list.clear()
-        self.align_bar.setValue(0)
-        self.rotation_bar.setValue(0)
         auto_mode = False
         send_enabled = False
         force_send = False
-        self.label_state.setText("Status: STANDBY")
         log("[AUTO] AUTO_PAUSED", self)
-
-
-
-
     def toggle_target_mode(self):
         global setting_target_mode, align_done, rotation_done, Target_Point
         align_done = rotation_done = False
@@ -1262,13 +1285,13 @@ class MainWindow(QMainWindow):
             setting_target_mode = True
             log("[TARGET] Click to TARGET", self)
             self.label_state.setText(self.t("Status") + ": " + self.t("MANUAL"))
-            self.label_message.setText(self.t("Click to set Target"))
+            #self.label_message.setText(self.t("Click to set Target"))
         else:
             setting_target_mode = False
             Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
             log(f"[TARGET] TARGET_POINT reset to center → {Target_Point}", self)
             self.label_state.setText(self.t("Status") + ": " + self.t("STANDBY"))
-            self.label_message.setText(self.t("Standby"))
+            #self.label_message.setText(self.t("Standby"))
             self.update_target_point_label()
     def move_home(self):
         global confirmed_center, home_mode, send_enabled, align_done, rotation_done
@@ -1283,12 +1306,12 @@ class MainWindow(QMainWindow):
             return
 
         home_mode = True
-        self.update_state("HOMING")
+        #self.update_state("HOMING")
         log("[HOMING] Start HOMING", self)
 
         dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, HOME_DXDY)
         if dx_steps + dy_steps < 10:
-            self.update_state("STANDBY")
+            #self.update_state("STANDBY")
             log("[HOMING] HOMING skipped", self)
             send_enabled = False
         else:
@@ -1341,8 +1364,8 @@ class MainWindow(QMainWindow):
             print("[DEBUG] Arduino command in progress")
         if awaiting_done:
             print("[DEBUG] Awaiting Arduino DONE response")
-        if align_done and not auto_mode:
-            self.label_message.setText("POSITION completed")
+        # if align_done and not auto_mode:
+        #     self.label_message.setText("POSITION completed")
  
 
         # 3) 카메라 프레임 읽기
@@ -1435,7 +1458,7 @@ class MainWindow(QMainWindow):
                 stable_count +=1
                 if stable_count>=STABLE_REQUIRED:
                     align_done=True; send_enabled=False; stable_count=0
-                    self.label_message.setText(" POSITION completed ")
+                    #self.label_message.setText(" POSITION completed ")
                     self.align_bar.setValue(100)
                     asyncio.create_task(self.send_serial_command("STOP_ALIGN"))
             else:
@@ -1454,33 +1477,33 @@ class MainWindow(QMainWindow):
                 self.rotation_bar.setValue(0)
 
         if auto_mode:
-            self.label_message.setText("AUTO")
+            #self.label_message.setText("AUTO")
             self.position_completed_shown = False
             self.rotation_completed_shown = False
         elif align_done:
             if not self.position_completed_shown:
-                self.label_message.setText("POSITION completed")
+                #self.label_message.setText("POSITION completed")
                 self.position_completed_shown = True
                 self.message_timer.start(2000)
         elif rotation_done:
             if not self.rotation_completed_shown:
-                self.label_message.setText("ROTATION completed")
+                #self.label_message.setText("ROTATION completed")
                 self.rotation_completed_shown = True
                 self.message_timer.start(2000)
         elif send_enabled:
-            self.label_message.setText(self.t("Positioning..."))
+            #self.label_message.setText(self.t("Positioning..."))
             self.position_completed_shown = False
             self.rotation_completed_shown = False
         elif self.rotation_active:
-            self.label_message.setText(self.t("Rotationing..."))
+            #self.label_message.setText(self.t("Rotationing..."))
             self.position_completed_shown = False
             self.rotation_completed_shown = False
         elif home_mode:
-            self.label_message.setText(self.t("Defaulting..."))
+            #self.label_message.setText(self.t("Defaulting..."))
             self.position_completed_shown = False
             self.rotation_completed_shown = False
         else:
-            self.label_message.setText(self.t("Standby"))
+            #self.label_message.setText(self.t("Standby"))
             self.position_completed_shown = False
             self.rotation_completed_shown = False
         # 12) 정렬 모드 로직
@@ -1494,7 +1517,7 @@ class MainWindow(QMainWindow):
                 stable_count +=1
                 if stable_count>=STABLE_REQUIRED:
                     align_done=True; send_enabled=False; stable_count=0
-                    self.label_message.setText(" POSITION completed ")
+                    #self.label_message.setText(" POSITION completed ")
                     asyncio.create_task(self.send_serial_command("STOP_ALIGN"))
             else:
                 stable_count=0
@@ -1540,20 +1563,6 @@ class MainWindow(QMainWindow):
             and not awaiting_done and not sending_command
             and cmd and cmd!=last_sent_command and not force_send):
             asyncio.create_task(self.send_serial_command(cmd))
-
-    def keyPressEvent(self, event):
-        key = event.key()
-        if key == Qt.Key_F1:
-            self.show_help_dialog()
-        elif key == Qt.Key_F2:
-            self.toggle_zoom_window()
-        elif key == Qt.Key_F3:
-            if self.log_window.isVisible():
-                self.log_window.hide()  
-            else:
-                self.log_window.show()  
-        elif key == Qt.Key_F5:
-            self.reload_yolo_model()
 
     def capture_screenshot(self):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
