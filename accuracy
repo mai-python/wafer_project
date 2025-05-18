@@ -1438,9 +1438,8 @@ class MainWindow(QMainWindow):
 
 
         if send_enabled and confirmed_center:
-            acc = calculate_accuracy_px(Target_Point, confirmed_center,
-                                        initial_offset=self.initial_offset,
-                                        tolerance_px=TOLERANCE_PX)
+            acc = calculate_accuracy_px(Target_Point, confirmed_center, initial_offset=self.initial_offset)  # tolerance_px 제거
+
             
             if not auto_mode:
                 self.align_bar.setValue(int(acc))  # 수동 정렬 모드에서만 직접 설정
@@ -1454,8 +1453,9 @@ class MainWindow(QMainWindow):
                     send_enabled = False
                     stable_count = 0
                     self.label_message.setText(" POSITION completed ")
-                    self.align_bar.setValue(100)  # 정렬 완료 시 명확히 100% 설정
+                    self.align_bar.setValue(100)  # 이건 시각적으로 명확히 끝났을 때만 100
                     asyncio.create_task(self.send_serial_command("STOP_ALIGN"))
+
             else:
                 stable_count = 0
 
