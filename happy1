@@ -219,7 +219,7 @@ def show_warning(self, title, message):
     warning.setStandardButtons(QMessageBox.Ok)
     warning.exec_()
 
-def calculate_accuracy_px(target_point, center_point):
+def calculate_accuracy_px(target_point, center_point): # 수정, 델타x,y로 정확도 계산 수정, max_error_px 및 threshold_px 삭제
     dx = target_point[0] - center_point[0]
     dy = target_point[1] - center_point[1]
     error_distance = (dx ** 2 + dy ** 2) ** 0.5
@@ -246,7 +246,7 @@ def compute_roundness(cnt):
         return 0
     return 4 * np.pi * area / (perimeter * perimeter)
 
-def draw_yolo_boxes(frame, results, window=None, override_type=None):
+def draw_yolo_boxes(frame, results):
     for box in results[0].boxes.data:
         x1, y1, x2, y2, conf, cls = box.tolist()
         class_name = results[0].names[int(cls)]
