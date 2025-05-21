@@ -1,4 +1,4 @@
-import sys, os, gc, time, asyncio, cv2, torch, numpy as np, serial_asyncio 
+import sys, os, gc, time, asyncio, cv2, torch, numpy as np, serial_asyncio, threading
 from ultralytics import YOLO
 from qasync import QEventLoop
 from PyQt5.QtCore import Qt, QTimer 
@@ -6,7 +6,7 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QTextEdit, QInputDialog, QGroupBox,
     QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QComboBox, QSizePolicy, QLineEdit, QMessageBox, QTabWidget,
-    QAction, QMenu, QSplashScreen, QGridLayout, QProgressBar, QCheckBox, QFileDialog
+    QAction, QMenu, QSplashScreen, QGridLayout, QProgressBar, QCheckBox, QFileDialog, QShortcut, 
 )
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -14,8 +14,9 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import random
 import csv
+from PyQt5.QtGui import QImage, QPixmap, QKeySequence, QPainter, QFont, QGuiApplication
 
-model = YOLO("C:\\wafer_project_main\\wafer_project_main\\best.pt")
+model = YOLO("C:\\Users\\Mai\\Desktop\\wafer_project\\redline.pt")
 FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
 default_dxdy = (600, 200)
@@ -164,9 +165,8 @@ class MainWindow(QMainWindow):
         self.setMouseTracking(True)
         menubar = self.menuBar()
 
-        self.recording = False
-        self.video_writer = None
-        window = None
+        QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self.launch_game)
+
         self.position_completed_shown = False
         self.rotation_completed_shown = False
         self.message_timer = QTimer(self)
@@ -185,8 +185,9 @@ class MainWindow(QMainWindow):
                 "Zoom": "확대",
                 "Save": "저장",
                 "Idle": "대기모드",
-                "Recording": "녹화",
                 "Input Degree": "각도 입력",
+                "Position Accuracy": "위치 정확도",
+                "Rotation Accuracy": "회전 정확도",
                 "SETTING": "설정",
                 "Click to TARGET": "타겟을 클릭하세요",
                 "ALIGN_STOPPING": "정렬 중지 중",
@@ -240,7 +241,6 @@ class MainWindow(QMainWindow):
                 "Variables": "변수설정",
                 "variables": "변수설정",
                 "Graph": "그래프",
-                "Recording": "녹화",
                 "Zoom": "확대창",
                 "graph": "그래프",
                 "Reload": "모델 새로고침",
@@ -304,7 +304,6 @@ class MainWindow(QMainWindow):
                 "start": "Start",
                 "set_target": "Set Target",
                 "Zoom": "Zoom",
-                "Recording": "Recording",
                 "help": "Help",
                 "file": "File",
                 "capture": "Capture",
@@ -316,14 +315,11 @@ class MainWindow(QMainWindow):
                 "RANDOM MODE": "RANDOM MODE",
                 "log": "Log",
                 "Status": "Status",
-                "STANDBY": "STANDBY",
-                "ALIGNING": "ALIGNING",
-                "ROTATING": "ROTATING",
-                "HOMING": "HOMING",
+                "Position Accuracy": "Position Accuracy",
+                "Rotation Accuracy": "Rotation Accuracy",
                 "AUTO": "AUTO",
                 "MANUAL": "MANUAL",
                 "Settings": "Settings",
-                "ROTATION ACCURACY(%)": "ROTATION ACCURACY(%)",
                 "Target Point": "Target Point",
                 "Target Deg.": "Target Deg.",
                 "Saved as": "Saved as",
@@ -367,14 +363,9 @@ class MainWindow(QMainWindow):
         self.log_action = QAction(self.t("Log"), self, triggered=self.toggle_log_window)
         self.zoom_action = QAction(self.t("Zoom"), self)
         self.zoom_action.triggered.connect(self.toggle_zoom_window)
-        self.record_action = QAction(self.t("Recording"))
-        self.record_action.setCheckable(True)
-        self.record_action.triggered.connect(self.toggle_recording)
-        self.tool_menu.addAction(self.record_action)
         self.tool_menu.addAction(self.reload_action)
         self.tool_menu.addAction(self.log_action)
         self.tool_menu.addAction(self.zoom_action)
-
 
         self.settings_menu = menubar.addMenu(self.t("Settings"))
         self.variables_action = QAction(self.t("Variables"), self, triggered=self.show_variable_tab)
@@ -411,18 +402,24 @@ class MainWindow(QMainWindow):
         self.tabs.hide() 
         self.setup_tabs() 
 
-        self.align_label = QLabel(self.t("POSITION ACCURACY(%)"))
-        self.align_label.setStyleSheet("font-size: 14px; font-weight: bold;")
-        self.rotation_label = QLabel(self.t("ROTATION ACCURACY(%)"))
-        self.rotation_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.align_text_label = QLabel("Position Accuracy\n0.00%")
+        self.rotation_text_label = QLabel("Rotation Accuracy\n0.00%")
+        for lbl in [self.align_text_label, self.rotation_text_label]:
+                    lbl.setStyleSheet("""
+                font-size: 16px;
+                font-weight: bold;
+                padding: 10px;
+                color: black;
+            """)
         self.align_bar = QProgressBar()
         self.rotation_bar = QProgressBar()
         self.align_bar.setMaximum(100)
         self.rotation_bar.setMaximum(100)
         progress_layout = QVBoxLayout()
-        progress_layout.addWidget(self.align_label)
+        progress_layout = QVBoxLayout()
+        progress_layout.addWidget(self.align_text_label)
         progress_layout.addWidget(self.align_bar)
-        progress_layout.addWidget(self.rotation_label)
+        progress_layout.addWidget(self.rotation_text_label)
         progress_layout.addWidget(self.rotation_bar)
         self.progress_widget = QWidget()
         self.progress_widget.setLayout(progress_layout)
@@ -430,13 +427,6 @@ class MainWindow(QMainWindow):
         self.label_wafer_type.setText(self.t("Wafer Type") + "\n")
         self.label_target_point.setText(self.t("Target Point") + f"\n({Target_Point[0]}, {Target_Point[1]})")
         self.label_coords.setText(self.t("Position_Err") + "\n" + "(0, 0)")
-        self.label_state = QLabel("Status: STANDBY") # Status 추후 삭제
-        self.label_state.setStyleSheet("""
-            font-size: 16px; 
-            color: transparent;
-            background: transparent;
-            border: none;
-        """)
         self.label_target_degree.setText(self.t("Target Deg.") +"\n"+ f"{Target_degree}°")
         self.label_angle_error.setText(self.t("Angle_Err") +"\n"+ f"0°")
         for lbl in [self.label_wafer_type, self.label_target_point, self.label_coords,
@@ -453,14 +443,6 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.label_coords, 0, 2)
         status_layout.addWidget(self.label_target_degree, 1, 1)
         status_layout.addWidget(self.label_angle_error, 1, 2)
-        status_layout.addWidget(self.label_state, 1, 0)
-        self.label_state = QLabel("Status: STANDBY")
-        self.label_state.setStyleSheet("""
-            font-size: 16px; 
-            color: transparent;
-            background: gray;
-            border: none;
-        """)
 
         self.status_widget = QWidget()
         self.status_widget.setLayout(status_layout)
@@ -510,6 +492,13 @@ class MainWindow(QMainWindow):
         asyncio.create_task(self.serial_setup())
         self.state = "Standby"
 
+    def set_waiting(self):
+        log("[STATUS] STANDBY", self)
+
+    def launch_game(self):
+        self.space_game = SpaceGame()
+        self.space_game.show()
+
     def save_all(self):
         fn = QFileDialog.getSaveFileName(self, "Save Loop Results", "", "CSV Files (*.csv)")[0]
         if not fn:
@@ -526,22 +515,7 @@ class MainWindow(QMainWindow):
                 writer.writerow(row)
         QMessageBox.information(self, "Saved", f"Loop results saved to {fn}")
 
-    def toggle_recording(self, checked):
-        if checked:
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"record_{timestamp}.avi"
-            self.video_writer = cv2.VideoWriter(
-                filename, fourcc, 30.0, (FRAME_WIDTH, FRAME_HEIGHT)
-            )
-            self.recording = True
-            log(f"[RECORD] Recording started: {filename}", self)
-        else:
-            if self.video_writer:
-                self.video_writer.release()
-                self.video_writer = None
-            self.recording = False
-            log(self.t(f"[RECORD] Recording completed"), self)
+
 
     def set_language(self, lang):
         self.language = lang
@@ -563,7 +537,6 @@ class MainWindow(QMainWindow):
             self.idle_mode_action.setText(self.t("Idle"))
             self.tool_menu.setTitle(self.t("Tool"))
             self.reload_action.setText(self.t("Reload"))
-            self.record_action.setText(self.t("Recording"))
             self.zoom_action.setText(self.t("Zoom"))
             self.log_action.setText(self.t("Log"))
             self.settings_menu.setTitle(self.t("Settings"))
@@ -584,14 +557,13 @@ class MainWindow(QMainWindow):
             self.a_button.setText(self.t("SET TARGET"))
             self.r_button.setText(self.t("START"))
             self.t_button.setText(self.t("Align"))
-            self.align_label.setText(self.t("POSITION ACCURACY(%)"))
-            self.rotation_label.setText(self.t("ROTATION ACCURACY(%)"))
+            self.align_text_label.setText(self.t("Position Accuracy(%)"))
+            self.rotation_text_label.setText(self.t("Rotation Accuarcy(%)"))
             self.label_wafer_type.setText(self.t("Wafer Type") +"\n"+ "  ")
             self.label_coords.setText(self.t("Position_Err") + "\n" + "(0, 0)")
             self.label_target_point.setText(self.t("Target Point") + f"\n({Target_Point[0]}, {Target_Point[1]})")
             self.label_target_degree.setText(self.t("Target Deg.") + f"\n{Target_degree}°")
             self.label_angle_error.setText(self.t("Angle_Err") +"\n"+ f"0°")
-            self.label_state.setText(self.t("Status") + "\n" + self.t("STANDBY"))
         except Exception as e:
             print("update_all_texts 오류:", e)
 
@@ -839,11 +811,6 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
 
-    def set_waiting(self):
-        self.label_state.setText(self.t("Status") + ": " + self.t("STANDBY"))
-        if not align_done:
-            self.label_state.setText(self.t("Status") + ": " + self.t("STANDBY"))
-
     async def serial_setup(self):
         try:
             self.ser_reader, self.ser_writer = await serial_asyncio.open_serial_connection(
@@ -870,7 +837,6 @@ class MainWindow(QMainWindow):
                 await asyncio.sleep(0.3)
                 retry += 1
             home_mode = False
-            #self.label_state.setText("Status: HOMING_DONE")
             log("[HOMING] Final confirmed_center → {}".format(confirmed_center), self)
 
     async def send_serial_command(self, command):
@@ -889,9 +855,9 @@ class MainWindow(QMainWindow):
         awaiting_done = True
 
         if home_mode:
-            self.label_state.setText(self.t("Status") + ": " + self.t("HOMING"))
+            log("[STATUS] HOMING", self)
         elif command == "STOP_ALIGNMENT":
-            self.label_state.setText(self.t("Status") + ": " + self.t("ALIGN_STOPPING"))
+            log("[STATUS] ALIGN_STOPPING", self)
         else:
             actual = command
             if command.upper() == "STOP" or command == "STOP_ALIGNMENT":
@@ -899,10 +865,8 @@ class MainWindow(QMainWindow):
 
             parts = actual.split(",")
             if len(parts) == 6 and (int(parts[4]) != 0 or int(parts[5]) != 0):
-                self.label_state.setText("Status: ROTATING")
                 log(f"[ROTATION] Sending ROTATION command: {actual}", self)
             else:
-                self.label_state.setText("Status: ALIGNING")
                 log(f"[ALIGN] Sending ALIGN command: {actual}", self)
 
             command = actual
@@ -921,34 +885,32 @@ class MainWindow(QMainWindow):
                         break
                 except asyncio.TimeoutError:
                     if home_mode:
-                        self.label_state.setText("Status: HOMING_TIMEOUT")
+                        log("[STATUS] HOMING_TIMEOUT", self)
                     elif command == "STOP_ALIGNMENT":
-                        self.label_state.setText("Status: ALIGN_STOP_TIMEOUT")
+                        log("[STATUS] ALIGN_STOP_TIMEOUT", self)
                     else:
-                        self.label_state.setText("Status: CMD_TIMEOUT")
+                        log("[STATUS] CMD_TIMEOUT", self)
                     break
 
         except Exception as e:
             log(f"[ERR] Serial communication error: {e}", self)
-            self.label_state.setText(self.t("Status") + ": " + self.t("SERIAL_ERROR"))
 
         finally:
             sending_command = False
             awaiting_done = False
 
             if home_mode:
-                self.label_state.setText(self.t("Status") + ": " + self.t("DEFAULT_DONE"))
+                log("[STATUS] DEFAULT_DONE", self)
                 home_mode = False
                 send_enabled = False
-
             elif last_sent_command == "0,0,0,0,0,0":
-                self.label_state.setText(self.t("Status") + ": " + self.t("STANDBY"))
+                log("[STATUS] STANDBY", self)
             else:
                 parts = last_sent_command.split(",")
                 if len(parts) == 6 and (int(parts[4]) != 0 or int(parts[5]) != 0):
-                    self.label_state.setText(self.t("Status") + ": " + self.t("ROTATION_STEP_DONE"))
+                    log("[STATUS] ROTATION_STEP_DONE", self)
                 else:
-                    self.label_state.setText(self.t("Status") + ": " + self.t("ALIGN_STEP_DONE"))
+                    log("[STATUS] ALIGN_STEP_DONE", self)
 
     def toggle_log_window(self):
         if self.log_window.isVisible():
@@ -1034,6 +996,8 @@ class MainWindow(QMainWindow):
             prog     = min(traveled / self.rotation_total, 1.0) * 100
             self.rotation_bar.setValue(int(prog))
 
+            rot_acc = calculate_rotation_accuracy(angle_error)
+            self.rotation_text_label.setText(f"Rotation Accuracy : {rot_acc:.2f}%")
             self.label_angle_error.setText(f"Angle_Err: {angle_error:.2f}°")
 
             if angle_error < TOLERANCE_R:
@@ -1134,6 +1098,7 @@ class MainWindow(QMainWindow):
                     pos_acc = calculate_accuracy_px(Target_Point, confirmed_center)
                     position_accuracy_list.append(pos_acc)
                     self.align_bar.setValue(int(pos_acc))
+                    self.align_text_label.setText(f"Position Accuracy\n{pos_acc:.2f}%")
                     if abs(dx) > TOLERANCE_PX or abs(dy) > TOLERANCE_PX:
                         await self.send_serial_command(cmd)
                     else:
@@ -1254,13 +1219,14 @@ class MainWindow(QMainWindow):
         if not setting_target_mode:
             setting_target_mode = True
             log("[TARGET] Click to TARGET", self)
-            self.label_state.setText(self.t("Status") + ": " + self.t("MANUAL"))
+            log("[STATUS] MANUAL", self)
         else:
             setting_target_mode = False
             Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
             log(f"[TARGET] TARGET_POINT reset to center → {Target_Point}", self)
-            self.label_state.setText(self.t("Status") + ": " + self.t("STANDBY"))
+            log("[STATUS] STANDBY", self)
             self.update_target_point_label()
+
     def move_home(self):
         global confirmed_center, home_mode, send_enabled, align_done, rotation_done
 
@@ -1304,7 +1270,7 @@ class MainWindow(QMainWindow):
                 force_send = True
                 setting_target_mode = False
                 send_enabled = False
-                self.label_state.setText("Status: STANDBY")
+                log("[STATUS] STANDBY", self)
 
     def reset(self):
         global confirmed_center, stable_count, last_sent_command
@@ -1342,16 +1308,6 @@ class MainWindow(QMainWindow):
             img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
             self.image_label.setPixmap(QPixmap.fromImage(img))
             return
-
-        if self.recording and self.video_writer:
-            pixmap = self.grab()
-            qimg = pixmap.toImage().convertToFormat(QImage.Format.Format_RGB888)
-            w, h = qimg.width(), qimg.height()
-            ptr = qimg.bits()
-            ptr.setsize(h * w * 3)
-            arr = np.array(ptr).reshape(h, w, 3)
-            arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-            self.video_writer.write(arr)
 
         display = frame.copy()
         results = model(display, conf=0.4)
@@ -1452,8 +1408,11 @@ class MainWindow(QMainWindow):
             self.position_completed_shown = False
             self.rotation_completed_shown = False
         elif home_mode:
+            self.align_bar.setValue(0)
+            self.rotation_bar.setValue(0)
             self.position_completed_shown = False
             self.rotation_completed_shown = False
+            return
         else:
             self.position_completed_shown = False
             self.rotation_completed_shown = False
@@ -1542,6 +1501,56 @@ class MainWindow(QMainWindow):
             self.zoom_window = ZoomWindow(self)  # MainWindow 인스턴스 넘김
         self.zoom_window.show()
         self.zoom_window.raise_()
+
+class SpaceGame(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Secret")
+        self.setFixedSize(400, 600)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_game)
+        self.timer.start(10)
+
+        self.ship_x = 180
+        self.ship_y = 500
+        self.obstacles = []
+        self.score = 0
+        self.speed = 15
+
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setBrush(Qt.black)
+        painter.drawRect(self.rect())
+        painter.setBrush(Qt.green)
+        painter.drawRect(self.ship_x, self.ship_y, 40, 20)
+        painter.setBrush(Qt.red)
+        for obs in self.obstacles:
+            painter.drawRect(obs[0], obs[1], 40, 20)
+        painter.setPen(Qt.white)
+        painter.setFont(QFont("Arial", 14))
+        painter.drawText(10, 30, f"Score: {self.score}")
+    def update_game(self):
+        for i in range(len(self.obstacles)):
+            self.obstacles[i][1] += self.speed
+        for x, y in self.obstacles:
+            if (self.ship_y < y + 20 and self.ship_y + 20 > y) and (self.ship_x < x + 40 and self.ship_x + 40 > x):
+                self.timer.stop()
+                QMessageBox.information(self, "Game Over", f"Point: {self.score}")
+                self.close()
+                return
+        if random.random() < 0.05:
+            new_x = random.randint(0, 360)
+            self.obstacles.append([new_x, 0])
+            self.score += 1
+        self.obstacles = [obs for obs in self.obstacles if obs[1] < 600]
+        self.update()
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Left:
+            self.ship_x = max(0, self.ship_x - 20)
+        elif event.key() == Qt.Key_Right:
+            self.ship_x = min(360, self.ship_x + 20)
 
 class LogWindow(QWidget):
     def __init__(self):
