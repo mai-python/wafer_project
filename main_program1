@@ -1,23 +1,23 @@
-import sys, os, gc, time, asyncio, cv2, torch, numpy as np, serial_asyncio, threading
+import sys, os, gc, time, asyncio, csv, random
+from datetime import datetime
+import cv2, torch, numpy as np, serial_asyncio
 from ultralytics import YOLO
 from qasync import QEventLoop
-from PyQt5.QtCore import Qt, QTimer 
-from PyQt5.QtGui import QImage, QPixmap 
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QImage, QPixmap, QKeySequence, QPainter, QFont
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QTextEdit, QInputDialog, QGroupBox,
-    QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QComboBox, QSizePolicy, QLineEdit, QMessageBox, QTabWidget,
-    QAction, QMenu, QSplashScreen, QGridLayout, QProgressBar, QCheckBox, QFileDialog, QShortcut, 
+    QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QComboBox, QSizePolicy, QLineEdit,
+    QMessageBox, QTabWidget, QAction, QMenu, QSplashScreen, QGridLayout, QProgressBar,
+    QCheckBox, QFileDialog, QShortcut
 )
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from datetime import datetime
 import matplotlib.pyplot as plt
-import random
-import csv
-from PyQt5.QtGui import QImage, QPixmap, QKeySequence, QPainter, QFont, QGuiApplication
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+
 
 model = YOLO("C:\\Users\\Mai\\Desktop\\wafer_project\\redline.pt")
-FRAME_WIDTH, FRAME_HEIGHT = 1280, 720
+FRAME_WIDTH, FRAME_HEIGHT = 1280, 720 
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
 default_dxdy = (600, 200)
 TOLERANCE_PX, TOLERANCE_R = 1, 1
@@ -25,14 +25,14 @@ PIXEL_TO_STEP = {'x': 33.0, 'y': 45.65}
 MAX_STEPS = 32000
 CAMERA_INDEX = 0
 BAUDRATE = 9600
-SERIAL_PORT = "COM5" #'Arduino IDE'들어가서 PORT 확인 필수
+SERIAL_PORT = "COM5" 
 STABLE_REQUIRED = 3
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE, FONT_THICKNESS = 0.6, 2
 TEXT_COLOR = (255, 255, 255)
 Target_degree, angle = 0, 0
 angle_to_step, rotation_step_max = 1, 32000
-auto_loop_count = 0  # 0이면 무한, 1부터 ~
+auto_loop_count = 0  
 random_x_min, random_x_max = 400, 800
 random_y_min, random_y_max = 300, 500
 random_angle_min, random_angle_max = 0, 360
@@ -68,27 +68,22 @@ def calculate_rotation_accuracy(angle_error_val, max_error=30):
     else:
         return round((1 - (angle_error_val / max_error)) * 100, 2)
 
-def show_warning(self, title, message):
-    warning = QMessageBox(self)
-    warning.setIcon(QMessageBox.Warning)
-    warning.setWindowTitle(title)
-    warning.setText(message)
-    warning.setStandardButtons(QMessageBox.Ok)
-    warning.exec_()
-
-def calculate_accuracy_px(target_point, center_point, initial_offset=(FRAME_WIDTH, FRAME_HEIGHT)):
+def calculate_accuracy_px(target_point, center_point, initial_offset=None):
     dx = target_point[0] - center_point[0]
     dy = target_point[1] - center_point[1]
-    error_distance = (dx ** 2 + dy ** 2) ** 0.5
-    start_distance = (initial_offset[0] ** 2 + initial_offset[1] ** 2) ** 0.5
+    current_distance = (dx ** 2 + dy ** 2) ** 0.5
+
+    if initial_offset is not None:
+        start_distance = (initial_offset[0] ** 2 + initial_offset[1] ** 2) ** 0.5
+    else:
+        start_distance = ((target_point[0] - FRAME_WIDTH // 2) ** 2 +
+                          (target_point[1] - FRAME_HEIGHT // 2) ** 2) ** 0.5
 
     if start_distance == 0:
         return 100.0
-    else:
-        acc = (1 - error_distance / start_distance) * 100
-        if acc < 0: acc = 0
-        if acc > 100: acc = 100
-        return round(acc, 2)
+    ratio = (start_distance - current_distance) / start_distance
+    ratio = max(0, min(1, ratio))
+    return round(ratio * 100, 2)
 
 def log(msg, window):
     timestamp = datetime.now().strftime("[%H:%M:%S]")
@@ -96,14 +91,6 @@ def log(msg, window):
     print(full_msg)
     if hasattr(window, 'log_window') and window.log_window:
         window.log_window.append_log(full_msg)
-
-def compute_roundness(cnt):
-    area = cv2.contourArea(cnt)
-    perimeter = cv2.arcLength(cnt, True)
-    if perimeter == 0:
-        return 0
-    return 4 * np.pi * area / (perimeter * perimeter)
-
 
 def draw_yolo_boxes(frame, results, window=None, override_type=None):
     for box in results[0].boxes.data:
@@ -137,8 +124,6 @@ def calculate_angle(pt1, pt2):
     return (180 - raw) % 360
 
 def calculate_rotation(current_angle, target_angle):
-
-    # return diR, stR
     dR = (target_angle - current_angle + 360) % 360
     diR = 1
     stR = max(1, min(int(dR * angle_to_step), rotation_step_max))
@@ -167,6 +152,10 @@ class MainWindow(QMainWindow):
 
         QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self.launch_game)
 
+
+        self.recording = False
+        self.video_writer = None
+        window = None
         self.position_completed_shown = False
         self.rotation_completed_shown = False
         self.message_timer = QTimer(self)
@@ -205,7 +194,6 @@ class MainWindow(QMainWindow):
                 "Set_Target": "목표설정",
                 "SET_TARGET": "목표설정",
                 "SET TARGET": "목표설정",
-                "set_target": "목표설정",
                 "HOMING": "원위치",
                 "DEFAULT": "원위치",
                 "default": "원위치",
@@ -241,15 +229,14 @@ class MainWindow(QMainWindow):
                 "Variables": "변수설정",
                 "variables": "변수설정",
                 "Graph": "그래프",
+                "Recording": "녹화",
                 "Zoom": "확대창",
                 "graph": "그래프",
                 "Reload": "모델 새로고침",
-                "reload": "모델 새로고침",
                 "Log": "로그",
                 "log": "로그",
                 "Tool": "도구",
                 "Language": "언어",
-                "language": "언어",
                 "Wafer Type": "웨이퍼 종류",
                 "Position_Err": "좌표_오차",
                 "Angle_Err": "각도_오차",
@@ -310,7 +297,6 @@ class MainWindow(QMainWindow):
                 "exit": "Exit",
                 "position": "Position",
                 "variables": "Variables",
-                "graph": "Graph",
                 "reload": "Reload Model",
                 "RANDOM MODE": "RANDOM MODE",
                 "log": "Log",
@@ -363,9 +349,14 @@ class MainWindow(QMainWindow):
         self.log_action = QAction(self.t("Log"), self, triggered=self.toggle_log_window)
         self.zoom_action = QAction(self.t("Zoom"), self)
         self.zoom_action.triggered.connect(self.toggle_zoom_window)
+        self.record_action = QAction(self.t("Recording"))
+        self.record_action.setCheckable(True)
+        self.record_action.triggered.connect(self.toggle_recording)
+        self.tool_menu.addAction(self.record_action)
         self.tool_menu.addAction(self.reload_action)
         self.tool_menu.addAction(self.log_action)
         self.tool_menu.addAction(self.zoom_action)
+
 
         self.settings_menu = menubar.addMenu(self.t("Settings"))
         self.variables_action = QAction(self.t("Variables"), self, triggered=self.show_variable_tab)
@@ -411,16 +402,16 @@ class MainWindow(QMainWindow):
                 padding: 10px;
                 color: black;
             """)
-        self.align_bar = QProgressBar()
-        self.rotation_bar = QProgressBar()
-        self.align_bar.setMaximum(100)
-        self.rotation_bar.setMaximum(100)
+        # self.align_bar = QProgressBar()
+        # self.rotation_bar = QProgressBar()
+        # self.align_bar.setMaximum(100)
+        # self.rotation_bar.setMaximum(100)
         progress_layout = QVBoxLayout()
         progress_layout = QVBoxLayout()
         progress_layout.addWidget(self.align_text_label)
-        progress_layout.addWidget(self.align_bar)
+        # progress_layout.addWidget(self.align_bar)
         progress_layout.addWidget(self.rotation_text_label)
-        progress_layout.addWidget(self.rotation_bar)
+        # progress_layout.addWidget(self.rotation_bar)
         self.progress_widget = QWidget()
         self.progress_widget.setLayout(progress_layout)
         self.progress_widget.setFixedWidth(300)
@@ -499,6 +490,14 @@ class MainWindow(QMainWindow):
         self.space_game = SpaceGame()
         self.space_game.show()
 
+    def show_warning(self, title, message):
+        warning = QMessageBox(self)
+        warning.setIcon(QMessageBox.Warning)
+        warning.setWindowTitle(title)
+        warning.setText(message)
+        warning.setStandardButtons(QMessageBox.Ok)
+        warning.exec_()
+
     def save_all(self):
         fn = QFileDialog.getSaveFileName(self, "Save Loop Results", "", "CSV Files (*.csv)")[0]
         if not fn:
@@ -515,7 +514,22 @@ class MainWindow(QMainWindow):
                 writer.writerow(row)
         QMessageBox.information(self, "Saved", f"Loop results saved to {fn}")
 
-
+    def toggle_recording(self, checked):
+        if checked:
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"record_{timestamp}.avi"
+            self.video_writer = cv2.VideoWriter(
+                filename, fourcc, 30.0, (FRAME_WIDTH, FRAME_HEIGHT)
+            )
+            self.recording = True
+            log(f"[RECORD] Recording started: {filename}", self)
+        else:
+            if self.video_writer:
+                self.video_writer.release()
+                self.video_writer = None
+            self.recording = False
+            log(self.t(f"[RECORD] Recording completed"), self)
 
     def set_language(self, lang):
         self.language = lang
@@ -537,6 +551,7 @@ class MainWindow(QMainWindow):
             self.idle_mode_action.setText(self.t("Idle"))
             self.tool_menu.setTitle(self.t("Tool"))
             self.reload_action.setText(self.t("Reload"))
+            self.record_action.setText(self.t("Recording"))
             self.zoom_action.setText(self.t("Zoom"))
             self.log_action.setText(self.t("Log"))
             self.settings_menu.setTitle(self.t("Settings"))
@@ -589,7 +604,7 @@ class MainWindow(QMainWindow):
             self.update_target_point_label()
             self.label_target_degree.setText(self.t("Target Deg.") + f":{Target_degree}°")
         except Exception as e:
-            show_warning(self, "Apply Error", str(e))
+            self.show_warning("Apply Error", str(e))
 
     def reset_auto_var_fields(self):
         self.auto_var_fields["default_dxdy"].setText(str((556, 188)))
@@ -706,7 +721,6 @@ class MainWindow(QMainWindow):
             self.show_warning(self.t("Operation Not Allowed", "AUTO cannot be excuted at this time"))
             return
         rotation_done = align_done = False
-        self.reset_progress()
         auto_mode = True
         if self.loop and not self.loop.is_closed():
             self.loop.create_task(self.auto_align_loop())
@@ -727,24 +741,6 @@ class MainWindow(QMainWindow):
         self.tabs.show()
         self.tabs.setCurrentWidget(self.rotation_tab)
 
-    def update_progress(self, dx, dy, angle_error, mode):
-        if mode == "align":
-
-            ox, oy = self.initial_offset
-
-            start_distance = (ox ** 2 + oy ** 2) ** 0.5
-            current_distance = (dx ** 2 + dy ** 2) ** 0.5
-
-            if start_distance == 0:
-                prog = 100
-            else:
-                prog = max(0, min(1, 1 - current_distance / start_distance)) * 100
-
-            self.align_bar.setValue(int(prog))
-    def reset_progress(self):
-        self.align_bar.setValue(0)
-        self.rotation_bar.setValue(0)
-
     def apply_align_var_changes(self):
         try:
             global default_dxdy, Target_Point, Target_degree
@@ -764,14 +760,10 @@ class MainWindow(QMainWindow):
         self.align_var_fields["TARGET_DEGREE"].setText(str(0))
         self.apply_align_var_changes()
 
-    def reset_progress(self):
-        self.align_bar.setValue(0)
-        self.rotation_bar.setValue(0)
-
     def set_target_degree(self):
         if send_enabled or auto_mode or home_mode or self.rotation_active:
             log("[ERROR] Cannot set TARGET_DEGREE during active operation", self)
-            show_warning(self,
+            self.show_warning(
                          "Operation Not Allowed",
                          "Cannot set target angle while another operation is in progress.")
             return
@@ -786,8 +778,6 @@ class MainWindow(QMainWindow):
         )
         if not ok:
             return
-
-        self.reset_progress()
         global Target_degree
         Target_degree = degree
         log(f"[Angle] Set Target_degree: {Target_degree:.2f}°", self)
@@ -822,11 +812,9 @@ class MainWindow(QMainWindow):
 
     async def default_loop(self):
         global confirmed_center, home_mode, dx, dy, send_enabled
-        self.reset_progress()
         if confirmed_center:
             home_mode = True
             log("[HOMING] Start HOMING", self)
-            #self.label_message.setText("HOMING...")
             retry = 0
             while retry < 10:
                 dx, dy, dx_steps, dy_steps, command = calculate_steps(confirmed_center, default_dxdy)
@@ -919,7 +907,7 @@ class MainWindow(QMainWindow):
             self.log_window.show()
             self.log_window.raise_()
 
-    def toggle_send(self):  # ALIGN 함수
+    def toggle_send(self):  # ALIGN 시작 함수
         global send_enabled, stable_count, Target_Point, auto_mode, align_done, rotation_done
 
         if self.rotation_active or auto_mode or home_mode:
@@ -929,13 +917,11 @@ class MainWindow(QMainWindow):
 
         if send_enabled:
             send_enabled = False
-            self.reset_progress()
             asyncio.create_task(self.send_serial_command("STOP_ALIGNMENT"))
             log("[ALIGN] ALIGN stopped", self)
             return
 
         align_done = rotation_done = False
-        self.reset_progress()
         send_enabled = True
         auto_mode = False
 
@@ -994,10 +980,10 @@ class MainWindow(QMainWindow):
 
             traveled = (angle - self.rotation_start + 360) % 360
             prog     = min(traveled / self.rotation_total, 1.0) * 100
-            self.rotation_bar.setValue(int(prog))
 
-            rot_acc = calculate_rotation_accuracy(angle_error)
+            rot_acc = max(0, min(100, (1 - angle_error / 360) * 100))
             self.rotation_text_label.setText(f"Rotation Accuracy : {rot_acc:.2f}%")
+
             self.label_angle_error.setText(f"Angle_Err: {angle_error:.2f}°")
 
             if angle_error < TOLERANCE_R:
@@ -1012,6 +998,7 @@ class MainWindow(QMainWindow):
                 command = f"0,0,0,0,{diR},{stR}"
                 log(f"[ROTATION] Sending step command: {command}", self)
                 await self.send_serial_command(command)
+
 
     def update_points_after_rotation(self, frame):
         global confirmed_center
@@ -1044,6 +1031,8 @@ class MainWindow(QMainWindow):
         log("[AUTO] AUTO started", self)
         auto_mode = True
         count = 0
+        position_accuracy_list.clear()
+        rotation_accuracy_list.clear()
 
         while auto_mode and (auto_loop_count == 0 or count < auto_loop_count):
             if RANDOM_MODE:
@@ -1066,7 +1055,7 @@ class MainWindow(QMainWindow):
                 stable_count_default = 0
                 retry = 0
                 while retry < 200:
-                    dx, dy, dx_s, dy_s, cmd = calculate_steps(confirmed_center, default_dxdy)
+                    dx, dy, dx_steps, dy_steps, cmd = calculate_steps(confirmed_center, default_dxdy)
                     if abs(dx) > TOLERANCE_PX or abs(dy) > TOLERANCE_PX:
                         await self.send_serial_command(cmd)
                         await asyncio.sleep(0.05)
@@ -1076,6 +1065,8 @@ class MainWindow(QMainWindow):
                         if stable_count_default >= STABLE_REQUIRED:
                             break
                         await asyncio.sleep(0.05)
+                    await asyncio.sleep(3.0)
+
 
             # 2) ALIGN 단계
             log(f"[AUTO] Loop {count+1}: ALIGN", self)
@@ -1083,11 +1074,13 @@ class MainWindow(QMainWindow):
             stable_count = 0
             if confirmed_center:
                 start_point = confirmed_center
-                dx0 = abs(Target_Point[0] - confirmed_center[0])
-                dy0 = abs(Target_Point[1] - confirmed_center[1])
+                dx0 = Target_Point[0] - confirmed_center[0]
+                dy0 = Target_Point[1] - confirmed_center[1]
                 self.initial_offset = (dx0, dy0)
+                start_point = confirmed_center
             else:
                 self.initial_offset = (FRAME_WIDTH, FRAME_HEIGHT)
+                start_point = (FRAME_WIDTH // 2, FRAME_HEIGHT)
 
             position_accuracy_list.clear()
             retry = 0
@@ -1095,9 +1088,8 @@ class MainWindow(QMainWindow):
                 await asyncio.sleep(0.05)
                 if confirmed_center:
                     dx, dy, dx_s, dy_s, cmd = calculate_steps(confirmed_center, Target_Point)
-                    pos_acc = calculate_accuracy_px(Target_Point, confirmed_center)
+                    pos_acc = calculate_accuracy_px(Target_Point, confirmed_center, self.initial_offset)
                     position_accuracy_list.append(pos_acc)
-                    self.align_bar.setValue(int(pos_acc))
                     self.align_text_label.setText(f"Position Accuracy\n{pos_acc:.2f}%")
                     if abs(dx) > TOLERANCE_PX or abs(dy) > TOLERANCE_PX:
                         await self.send_serial_command(cmd)
@@ -1110,7 +1102,6 @@ class MainWindow(QMainWindow):
 
             await self.send_serial_command("STOP_ALIGN")
             log(f"[AUTO] Loop {count+1}: ALIGN done", self)
-            await asyncio.sleep(3.0)
 
             # 3) ROTATION 단계
             log(f"[AUTO] Loop {count+1}: ROTATION", self)
@@ -1118,6 +1109,12 @@ class MainWindow(QMainWindow):
             self.rotation_active = True
             final_rot_acc = 0.0
             final_angle_err = 0.0
+
+            # 회전 루프 준비: 회전 시작 각도/총 이동 각도 기록
+            self.rotation_start = angle
+            self.rotation_total = (Target_degree - self.rotation_start + 360) % 360
+            if self.rotation_total == 0:
+                self.rotation_total = 360
 
             while True:
                 await asyncio.sleep(0.2)
@@ -1141,9 +1138,12 @@ class MainWindow(QMainWindow):
                 cur_ang = calculate_angle(f1_c, wafer_c)
                 diff = (Target_degree - cur_ang + 540) % 360 - 180
                 angle_err = abs(diff)
-                rot_acc = calculate_rotation_accuracy(angle_err)
 
-                self.rotation_bar.setValue(int(rot_acc))
+                traveled = (cur_ang - self.rotation_start + 360) % 360
+                prog = min(traveled / self.rotation_total, 1.0) * 100
+
+                rot_acc = max(0, min(100, (1 - angle_err / 360) * 100))
+                self.rotation_text_label.setText(f"Rotation Accuracy : {rot_acc:.2f}%")
 
                 if angle_err < TOLERANCE_R:
                     final_rot_acc = rot_acc
@@ -1154,7 +1154,7 @@ class MainWindow(QMainWindow):
                     rotation_done = True
                     break
                 else:
-                    diR, stR = calculate_rotation(angle, Target_degree)
+                    diR, stR = calculate_rotation(cur_ang, Target_degree)
                     cmd = f"0,0,0,0,{diR},{stR}"
                     await self.send_serial_command(cmd)
 
@@ -1186,7 +1186,7 @@ class MainWindow(QMainWindow):
                 f"PosAcc={final_pos_acc:.2f}%, ΔX={final_dx}, ΔY={final_dy}, "
                 f"RotAcc={final_rot_acc:.2f}%, RotErr={final_angle_err:.2f}°", self)
 
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(1.0)
 
             # 4) FINAL DEFAULT
             if confirmed_center:
@@ -1204,17 +1204,22 @@ class MainWindow(QMainWindow):
                         if stable_count_default >= STABLE_REQUIRED:
                             break
                         await asyncio.sleep(0.05)
-
+                        position_accuracy_list.clear()
+                        rotation_accuracy_list.clear()
+                        self.align_text_label.setText(f"Position Accuracy\n0.00%")
+                        self.rotation_text_label.setText(f"Rotation Accuracy\n0.00%")
+                    await asyncio.sleep(3.0) # 웨이퍼 교체 시간
             count += 1
 
         auto_mode = False
         send_enabled = False
         force_send = False
         log("[AUTO] AUTO_PAUSED", self)
+
+
     def toggle_target_mode(self):
         global setting_target_mode, align_done, rotation_done, Target_Point
         align_done = rotation_done = False
-        self.reset_progress()
 
         if not setting_target_mode:
             setting_target_mode = True
@@ -1231,7 +1236,6 @@ class MainWindow(QMainWindow):
         global confirmed_center, home_mode, send_enabled, align_done, rotation_done
 
         align_done = rotation_done = False
-        self.reset_progress()
 
         if not confirmed_center \
         or awaiting_done or sending_command \
@@ -1301,23 +1305,20 @@ class MainWindow(QMainWindow):
                 log("[CAMERA] Received failed to frame", self)
                 self.warned_once = True
             return
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        display = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
         if not self.tabs.isVisible():
-            display = frame.copy()
             rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb.shape
-            img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+            img = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
             self.image_label.setPixmap(QPixmap.fromImage(img))
             return
 
-        display = frame.copy()
-        results = model(display, conf=0.4)
-        gray = cv2.cvtColor(display, cv2.COLOR_BGR2GRAY)
-        display = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        results = model(frame, conf=0.6)
 
-        if not (align_done or rotation_done or auto_mode or send_enabled or self.rotation_active or home_mode):
-            self.label_coords.setText(self.t("Position_Err") + ": -")
-            self.reset_progress()
-
+        wafer_type = None
         has_f1 = has_f2 = False
         for box in results[0].boxes.data:
             _, _, _, _, _, cls = box.tolist()
@@ -1325,10 +1326,10 @@ class MainWindow(QMainWindow):
             if label == "F1": has_f1 = True
             elif label == "F2": has_f2 = True
 
-        wafer_type = None
         if has_f1 and has_f2: wafer_type = "P100"
         elif has_f1:          wafer_type = "P111"
         self.label_wafer_type.setText(self.t("Wafer Type\n") + str(wafer_type or "  "))
+
         draw_yolo_boxes(display, results, self, wafer_type)
 
         if wafer_type in ("P100", "P111") and not self.summary_type_inited[wafer_type]:
@@ -1365,15 +1366,22 @@ class MainWindow(QMainWindow):
 
         confirmed_center = wafer_center
 
-        if send_enabled and confirmed_center:
-            acc = calculate_accuracy_px(Target_Point, confirmed_center, initial_offset=self.initial_offset)
-            self.align_bar.setValue(int(acc))
+        if confirmed_center and send_enabled:
+            dx = Target_Point[0] - confirmed_center[0]
+            dy = Target_Point[1] - confirmed_center[1]
+            ox, oy = self.initial_offset
+            start_distance = (ox**2 + oy**2)**0.5
+            current_distance = (dx**2 + dy**2)**0.5
+            if start_distance == 0:
+                progress = 100.0
+            else:
+                progress = max(0, min(1, 1 - current_distance / start_distance)) * 100.0
+            self.align_text_label.setText(f"Position Accuracy\n{progress:.2f}%")
             dx, dy, dx_s, dy_s, cmd = calculate_steps(confirmed_center, Target_Point)
             if abs(dx)<=TOLERANCE_PX and abs(dy)<=TOLERANCE_PX:
                 stable_count +=1
                 if stable_count>=STABLE_REQUIRED:
                     align_done=True; send_enabled=False; stable_count=0
-                    self.align_bar.setValue(100)
                     asyncio.create_task(self.send_serial_command("STOP_ALIGN"))
             else:
                 stable_count=0
@@ -1382,13 +1390,6 @@ class MainWindow(QMainWindow):
                 and cmd and (cmd!=last_sent_command or force_send)):
                 asyncio.create_task(self.send_serial_command(cmd))
                 force_send=False
-
-            if auto_mode and position_accuracy_list:
-                self.align_bar.setValue(int(position_accuracy_list[-1]))
-                self.rotation_bar.setValue(int(rotation_accuracy_list[-1]) if rotation_accuracy_list else 0)
-            else:
-                self.align_bar.setValue(0)
-                self.rotation_bar.setValue(0)
 
         if auto_mode:
             self.position_completed_shown = False
@@ -1408,8 +1409,6 @@ class MainWindow(QMainWindow):
             self.position_completed_shown = False
             self.rotation_completed_shown = False
         elif home_mode:
-            self.align_bar.setValue(0)
-            self.rotation_bar.setValue(0)
             self.position_completed_shown = False
             self.rotation_completed_shown = False
             return
@@ -1421,8 +1420,7 @@ class MainWindow(QMainWindow):
             dx, dy, dx_s, dy_s, cmd = calculate_steps(confirmed_center, Target_Point)
             self.label_coords.setText(self.t("Position_Err") + f":\n({dx}, {dy})")
             if send_enabled:
-                acc = calculate_accuracy_px(Target_Point, confirmed_center)
-                self.align_bar.setValue(int(acc))
+                acc = calculate_accuracy_px(Target_Point, confirmed_center, self.initial_offset)
             if abs(dx)<=TOLERANCE_PX and abs(dy)<=TOLERANCE_PX:
                 stable_count +=1
                 if stable_count>=STABLE_REQUIRED:
@@ -1435,13 +1433,6 @@ class MainWindow(QMainWindow):
                     and cmd and (cmd!=last_sent_command or force_send)):
                     asyncio.create_task(self.send_serial_command(cmd))
                     force_send=False
-        elif auto_mode:
-            self.align_bar.setValue(int(position_accuracy_list[-1]) if position_accuracy_list else 0)
-            self.rotation_bar.setValue(int(rotation_accuracy_list[-1]) if rotation_accuracy_list else 0)
-        else:
-            self.label_coords.setText(self.t("Position_Err") + ": -")
-            if not (align_done or rotation_done or auto_mode):
-                self.reset_progress()
 
         if confirmed_center:
             cx, cy = confirmed_center
@@ -1449,24 +1440,24 @@ class MainWindow(QMainWindow):
             cv2.putText(display, f"({cx},{cy})",
                         (cx+10,cy+10), FONT, FONT_SCALE, (0,255,0), FONT_THICKNESS)
             cv2.line(display, tuple(Target_Point), (cx,cy), (255,0,0), 2)
-
         cv2.circle(display, tuple(Target_Point), 5, (0,0,255), -1)
 
+        # PyQt5 QImage로 변환 및 표시
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         img = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
         self.image_label.setPixmap(QPixmap.fromImage(img))
 
+        # Zoom윈도우 지원
         half = 50
         x1 = max(0, Target_Point[0]-half)
         y1 = max(0, Target_Point[1]-half)
         x2 = min(display.shape[1], Target_Point[0]+half)
         y2 = min(display.shape[0], Target_Point[1]+half)
         zoom = display[y1:y2, x1:x2]
-
         if zoom.size > 0 and hasattr(self, 'zoom_window') and self.zoom_window:
             zoom_resized = cv2.resize(zoom, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
-            zoom_resized_rgb = cv2.cvtColor(zoom_resized, cv2.COLOR_BGR2RGB)  # ✅ 색상 변환 추가
+            zoom_resized_rgb = cv2.cvtColor(zoom_resized, cv2.COLOR_BGR2RGB)
             h2, w2, ch2 = zoom_resized_rgb.shape
             qimg = QImage(zoom_resized_rgb.data, w2, h2, ch2 * w2, QImage.Format_RGB888)
             self.zoom_window.zoom_label.setPixmap(QPixmap.fromImage(qimg))
@@ -1475,6 +1466,7 @@ class MainWindow(QMainWindow):
             and not awaiting_done and not sending_command
             and cmd and cmd!=last_sent_command and not force_send):
             asyncio.create_task(self.send_serial_command(cmd))
+
 
     def capture_screenshot(self):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -1498,7 +1490,7 @@ class MainWindow(QMainWindow):
 
     def toggle_zoom_window(self):
         if not self.zoom_window:
-            self.zoom_window = ZoomWindow(self)  # MainWindow 인스턴스 넘김
+            self.zoom_window = ZoomWindow(self)
         self.zoom_window.show()
         self.zoom_window.raise_()
 
@@ -1509,7 +1501,7 @@ class SpaceGame(QWidget):
         self.setFixedSize(400, 600)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_game)
-        self.timer.start(10)
+        self.timer.start(30)
 
         self.ship_x = 180
         self.ship_y = 500
@@ -1537,7 +1529,7 @@ class SpaceGame(QWidget):
         for x, y in self.obstacles:
             if (self.ship_y < y + 20 and self.ship_y + 20 > y) and (self.ship_x < x + 40 and self.ship_x + 40 > x):
                 self.timer.stop()
-                QMessageBox.information(self, "Game Over", f"Point: {self.score}")
+                QMessageBox.information(self, "Game Over", f"게임 종료! 점수: {self.score}")
                 self.close()
                 return
         if random.random() < 0.05:
@@ -1645,7 +1637,7 @@ class VariableTab(QWidget):
         super().__init__()
         self.main_window = main_window
         self.default_values = {
-            "default_dxdy": "(556, 188)", # default_dxdy 먼저 수정
+            "default_dxdy": "(556, 188)", 
             "Target_Point": "[640, 360]",
             "PIXEL_TO_STEP": "{'x': 33.0, 'y': 45.65}", 
             "TOLERANCE_PX": "1",
@@ -1684,7 +1676,7 @@ class VariableTab(QWidget):
 
     def apply_changes(self):
         try:
-            changes = [] # 변수변경내역저장
+            changes = [] 
 
             def update_variable(name, parse_func):
                 old_val = str(globals()[name])
