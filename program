@@ -1,22 +1,23 @@
-import sys, os, gc, time, asyncio, csv, random
+import sys, os, gc, time, asyncio, csv, random, pyautogui
 from datetime import datetime
 import cv2, torch, numpy as np, serial_asyncio
 from ultralytics import YOLO
 from qasync import QEventLoop
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QKeySequence, QPainter, QFont
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QTextEdit, QInputDialog, QGroupBox,
-    QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea, QComboBox, QSizePolicy, QLineEdit,
-    QMessageBox, QTabWidget, QAction, QMenu, QSplashScreen, QGridLayout, QProgressBar,
-    QCheckBox, QFileDialog, QShortcut
-)
+from PyQt5.QtWidgets import *
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from PIL import Image
+def resource_path(relative_path): # exe로 변환시 필요한 주소지정함수 
+    """model = YOLO보다 위에 있어야 작동함"""
+    try:
+        base_path = sys._MEIPASS  
+    except Exception:
+        base_path = os.path.abspath(".") 
+    return os.path.join(base_path, relative_path)
 
-
-model = YOLO("C:\\Users\\Woody_msiPC\\Desktop\\wafer_align\\Code\\best.pt")
+model = YOLO(resource_path(os.path.join("models", "best.pt")))
 FRAME_WIDTH, FRAME_HEIGHT = 1280, 720 
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
 default_dxdy = (740, 340)
@@ -59,8 +60,9 @@ rotation_done = False
 position_accuracy_list = []
 rotation_accuracy_list = []
 RANDOM_MODE = False
+wafer_type = None 
 
-def camera_list(max_index=5):
+def camera_list(max_index=10): # 카메라 10번까지 확인, ERROR:0@11.250 무시
     camera_list = []
     for i in range(max_index):
         cap = cv2.VideoCapture(i)
@@ -71,7 +73,7 @@ def camera_list(max_index=5):
             cap.release()
     return camera_list
         
-def list_available_model(folder="C:\\Users\\Woody_msiPC\\Desktop\\wafer_align\\Code", ext=".pt"):
+def list_available_model(folder="C:\\Users\\Woody_msiPC\\Desktop\\wafer_align\\Code", ext=".pt"): # 기본 model 폴더 위치
     return [f for f in os.listdir(folder) if f.endswith(ext)]
 
 def calculate_rotation_accuracy(angle_error_val, max_error=30):
@@ -164,12 +166,13 @@ class MainWindow(QMainWindow):
         self.setMouseTracking(True)
         menubar = self.menuBar()
 
+        self.pause_requested = False  # align 루프 stop변수 , 2번째 default까지만 수행하고 정지
+
         QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self.launch_game)
-
-
+        self.model_folder = resource_path("models")
+        self.current_model_path = os.path.join(self.model_folder, "best.pt")
         self.recording = False
         self.video_writer = None
-        window = None
         self.position_completed_shown = False
         self.rotation_completed_shown = False
         self.message_timer = QTimer(self)
@@ -186,30 +189,25 @@ class MainWindow(QMainWindow):
         self.texts = {
             "ko": {
                 "Zoom": "확대",
+                "Show Range": "범위 표시",
                 "Save": "저장",
                 "Idle": "대기모드",
                 "Input Degree": "각도 입력",
                 "Position Accuracy": "위치 정확도",
                 "Rotation Accuracy": "회전 정확도",
+                "Change Model Folder": "모델 폴더 변경",
                 "SETTING": "설정",
-                "Click to TARGET": "타겟을 클릭하세요",
-                "ALIGN_STOPPING": "정렬 중지 중",
-                "DEFAULT_DONE": "원위치 완료",
-                "ROTATION_STEP_DONE": "회전 완료",
                 "Mode": "모드",
                 "Auto": "자동",
                 "Manual": "수동",
-                "ALIGN_STEP_DONE": "정렬 완료",
-                "RANDOM MODE": "무작위",
-                "align": "자동모드",
-                "Align": "자동모드",
-                "ALGIN": "자동모드",
+                "Align": "정렬",
+                "ALGIN": "정렬",
                 "set target": "목표설정",
                 "Set_Target": "목표설정",
                 "SET_TARGET": "목표설정",
                 "SET TARGET": "목표설정",
-                "HOMING": "원위치",
                 "DEFAULT": "원위치",
+                "Pause": "정지",
                 "default": "원위치",
                 "Default": "원위치",
                 "Angle": "각도",
@@ -217,13 +215,8 @@ class MainWindow(QMainWindow):
                 "angle": "각도",
                 "ROTATION": "회전",
                 "Rotation": "회전",
-                "rotation": "회전",
-                "Status": "상태",
-                "STATUS": "상태",
-                "status": "상태",
                 "Standby": "대기중",
                 "STANDBY": "대기중",
-                "standby": "대기중",
                 "START": "시작",
                 "Start": "시작",
                 "start": "시작",
@@ -231,35 +224,23 @@ class MainWindow(QMainWindow):
                 "Help": "도움말",
                 "file": "파일",
                 "File": "파일",
-                "Capture": "사진저장",
-                "capture": "사진저장",
+                "Capture": "사진 저장",
                 "Exit": "종료",
                 "Idle": "대기",
-                "Capture": "사진저장",
                 "exit": "종료",
-                "position": "위치이동",
-                "POSITION": "위치이동",
-                "Position": "위치이동",
-                "Variables": "변수설정",
-                "variables": "변수설정",
-                "Graph": "그래프",
+                "POSITION": "이동",
+                "Position": "이동",
+                "Variables": "변수 설정",
+                "variables": "변수 설정",
                 "Recording": "녹화",
                 "Zoom": "확대창",
-                "graph": "그래프",
                 "Reload": "모델 새로고침",
                 "Log": "로그",
-                "log": "로그",
                 "Tool": "도구",
                 "Language": "언어",
                 "Wafer Type": "웨이퍼 종류",
                 "Position_Err": "좌표_오차",
                 "Angle_Err": "각도_오차",
-                "Positioning...": "위치이동중...",
-                "Defaulting...": "원위치중",
-                "Rotationing...": "회전중...",
-                "Click to set Target": "목표지점 설정하세요",
-                "POSITION completed": "이동 완료됨",
-                "Waiting for next Wafer": "다음 웨이퍼 기다리는중",
                 "Function": "기능",
                 "Settings": "설정",
                 "Wafer Type": "웨이퍼 종류",
@@ -268,13 +249,11 @@ class MainWindow(QMainWindow):
                 "Target Deg.": "목표 각도",
                 "Angle_Err": "각도 오차",
                 "Status": "상태",
-                "POSITION ACCURACY(%)": "정렬 정확도(%)",
-                "ROTATION ACCURACY(%)": "회전 정확도(%)",
+                "POSITION ACCURACY": "이동 정확도",
+                "ROTATION ACCURACY": "회전 정확도",
                 "Target Deg.": "목표 각도",
                 "Saved as": "저장 위치:",
                 "Screenshot": "스크린샷",
-                "Apply": "적용",
-                "Reset": "초기화",
                 "Alignment_Zoom": "확대창",
                 "Log Saved": "로그 저장됨",
                 "Saved": "저장됨",
@@ -286,24 +265,32 @@ class MainWindow(QMainWindow):
                 "Position_Err": "좌표 오차",
                 "Target Deg.": "목표 각도",
                 "Angle_Err": "각도 오차",
-                "random_x_min": "무작위 x 최소 범위",
+                "Camera Select": "카메라 선택",
+                "Model Select": "모델 선택",
                 "Wafer Type": "웨이퍼 종류",
-                "AUTO": "자동모드",
+                "AUTO": "자동 모드",
+                "English": "영어",
                 "Save": "결과 저장",
-                "MANUAL": "수동모드",
-                "Operation Not Allowed": "작업 불가",
+                "MANUAL": "수동 모드",
             },
             "en": {
                 "align": "Align",
+                "English": "English",
                 "Set Target": "Set Target",
                 "DEFAULT": "DEFAULT",
+                "Wafer Type": "Wafer Type",
                 "angle": "Angle",
                 "rotation": "Rotation",
                 "auto": "Auto Mode",
                 "status": "Status",
                 "standby": "Standby",
+                "Change Model Folder": "Change Model Folder",
                 "start": "Start",
+                "Pause": "Pause",
                 "set_target": "Set Target",
+                "Show Range": "Show Range",
+                "Camera Select": "Camera Select",
+                "Model Select": "Model Select",
                 "Zoom": "Zoom",
                 "help": "Help",
                 "file": "File",
@@ -365,12 +352,16 @@ class MainWindow(QMainWindow):
         self.zoom_action.triggered.connect(self.toggle_zoom_window)
         self.record_action = QAction(self.t("Recording"))
         self.record_action.setCheckable(True)
+        self.show_range_action = QAction(self.t("Show Range"), self)
+        self.show_range_action.setCheckable(True)
+        self.show_range_action.triggered.connect(self.toggle_show_range)
+        self.tool_menu.addAction(self.show_range_action)
+        self.show_range = False
         self.record_action.triggered.connect(self.toggle_recording)
         self.tool_menu.addAction(self.record_action)
         self.tool_menu.addAction(self.reload_action)
         self.tool_menu.addAction(self.log_action)
         self.tool_menu.addAction(self.zoom_action)
-
 
         self.settings_menu = menubar.addMenu(self.t("Settings"))
         self.camera_menu = QMenu(self.t("Camera Select"), self)
@@ -422,20 +413,14 @@ class MainWindow(QMainWindow):
                 padding: 10px;
                 color: black;
             """)
-        # self.align_bar = QProgressBar()
-        # self.rotation_bar = QProgressBar()
-        # self.align_bar.setMaximum(100)
-        # self.rotation_bar.setMaximum(100)
         progress_layout = QVBoxLayout()
         progress_layout = QVBoxLayout()
         progress_layout.addWidget(self.align_text_label)
-        # progress_layout.addWidget(self.align_bar)
         progress_layout.addWidget(self.rotation_text_label)
-        # progress_layout.addWidget(self.rotation_bar)
         self.progress_widget = QWidget()
         self.progress_widget.setLayout(progress_layout)
         self.progress_widget.setFixedWidth(300)
-        self.label_wafer_type.setText(self.t("Wafer Type") + "\n")
+        self.label_wafer_type.setText(self.t("Wafer Type") + "\n" + str(wafer_type or "  "))
         self.label_target_point.setText(self.t("Target Point") + f"\n({Target_Point[0]}, {Target_Point[1]})")
         self.label_coords.setText(self.t("Position_Err") + "\n" + "(0, 0)")
         self.label_target_degree.setText(self.t("Target Deg.") +"\n"+ f"{Target_degree}°")
@@ -503,6 +488,9 @@ class MainWindow(QMainWindow):
         asyncio.create_task(self.serial_setup())
         self.state = "Standby"
 
+    def toggle_show_range(self):
+        self.show_range = not self.show_range
+
     def set_waiting(self):
         log("[STATUS] STANDBY", self)
 
@@ -536,20 +524,33 @@ class MainWindow(QMainWindow):
 
     def toggle_recording(self, checked):
         if checked:
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"record_{timestamp}.avi"
-            self.video_writer = cv2.VideoWriter(
-                filename, fourcc, 30.0, (FRAME_WIDTH, FRAME_HEIGHT)
-            )
+            target_dir = resource_path("recordings") # recordings폴더 생성해서 저장
+            os.makedirs(target_dir, exist_ok=True)
+            filename = os.path.join(target_dir, f"record_{timestamp}.avi")
+            screen_size = pyautogui.size()
+            fourcc = cv2.VideoWriter_fourcc(*"XVID")
+            self.video_writer = cv2.VideoWriter(filename, fourcc, 10.0, screen_size)
             self.recording = True
+            self.record_timer = QTimer(self)
+            self.record_timer.timeout.connect(self.capture_screen_frame)
+            self.record_timer.start(300)
             log(f"[RECORD] Recording started: {filename}", self)
         else:
+            if self.record_timer:
+                self.record_timer.stop()
             if self.video_writer:
                 self.video_writer.release()
                 self.video_writer = None
             self.recording = False
-            log(self.t(f"[RECORD] Recording completed"), self)
+            log("[RECORD] Recording completed", self)
+
+    def capture_screen_frame(self):
+        if not self.recording or not self.video_writer:
+            return
+        screenshot = pyautogui.screenshot()
+        frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+        self.video_writer.write(frame)
 
     def set_language(self, lang):
         self.language = lang
@@ -575,8 +576,10 @@ class MainWindow(QMainWindow):
             self.zoom_action.setText(self.t("Zoom"))
             self.log_action.setText(self.t("Log"))
             self.settings_menu.setTitle(self.t("Settings"))
-            # camera menu
-            # model menu
+            self.camera_menu.setTitle(self.t("Camera Select"))
+            self.show_range_action.setText(self.t("Show Range"))
+            self.model_menu.setTitle(self.t("Model Select"))
+            
             self.variables_action.setText(self.t("Variables"))
             self.language_menu.setTitle(self.t("Language"))
             self.ko_action.setText("한국어")
@@ -586,7 +589,7 @@ class MainWindow(QMainWindow):
             self.tabs.setTabText(self.tabs.indexOf(self.position_tab), self.t("Position"))
             self.tabs.setTabText(self.tabs.indexOf(self.rotation_tab), self.t("Rotation"))
             self.tabs.setTabText(self.tabs.indexOf(self.variable_tab), self.t("Variables"))
-            self.tabs.setTabText(self.tabs.indexOf(self.auto_tab), self.t("Align"))
+            self.tabs.setTabText(self.tabs.indexOf(self.auto_tab), self.t("Auto"))
             # 버튼/라벨
             self.m_button.setText(self.t("SET TARGET"))
             self.s_button.setText(self.t("START"))
@@ -594,9 +597,10 @@ class MainWindow(QMainWindow):
             self.a_button.setText(self.t("SET TARGET"))
             self.r_button.setText(self.t("START"))
             self.t_button.setText(self.t("Align"))
-            self.align_text_label.setText(self.t("Position Accuracy(%)"))
-            self.rotation_text_label.setText(self.t("Rotation Accuarcy(%)"))
-            self.label_wafer_type.setText(self.t("Wafer Type") +"\n"+ "  ")
+            self.pause_button.setText(self.t("Pause"))
+            self.align_text_label.setText(self.t("Position Accuracy"))
+            self.rotation_text_label.setText(self.t("Rotation Accuracy"))
+            self.label_wafer_type.setText(self.t("Wafer Type") + "\n" + str(wafer_type or "  "))
             self.label_coords.setText(self.t("Position_Err") + "\n" + "(0, 0)")
             self.label_target_point.setText(self.t("Target Point") + f"\n({Target_Point[0]}, {Target_Point[1]})")
             self.label_target_degree.setText(self.t("Target Deg.") + f"\n{Target_degree}°")
@@ -611,8 +615,8 @@ class MainWindow(QMainWindow):
         try:
             global default_dxdy, Target_Point, Target_degree, auto_loop_count, RANDOM_MODE, random_angle_max, random_angle_min, random_x_max, random_x_min, random_y_max, random_y_min
             default_dxdy     = eval(self.auto_var_fields["default_dxdy"].text())
-            Target_Point  = eval(self.auto_var_fields["TARGET_POINT"].text())
-            Target_degree = float(self.auto_var_fields["TARGET_DEGREE"].text())
+            Target_Point  = eval(self.auto_var_fields["Target_Point"].text())
+            Target_degree = float(self.auto_var_fields["Target_degree"].text())
             auto_loop_count = int(self.auto_var_fields["LOOP"].text())
             random_x_min      = int(self.auto_var_fields["random_x_min"].text())
             random_x_max      = int(self.auto_var_fields["random_x_max"].text())
@@ -653,7 +657,6 @@ class MainWindow(QMainWindow):
 
     def make_camera_selector(self, index):
         return lambda checked=False: self.set_camera_index(index)
-
 
     def set_standby_message(self):
         self.position_completed_shown = False
@@ -709,19 +712,25 @@ class MainWindow(QMainWindow):
         auto_layout.setContentsMargins(10, 10, 10, 10)
         auto_layout.setSpacing(20)
 
-        self.t_button = QPushButton(self.t("Auto"))
+        self.t_button = QPushButton(self.t("Align"))
         self.t_button.setFixedHeight(40)
         self.t_button.setStyleSheet("font-size:18px;")
         self.t_button.clicked.connect(self.start_auto_align)
         auto_layout.addWidget(self.t_button)
 
+        self.pause_button = QPushButton(self.t("Pause"))
+        self.pause_button.setFixedHeight(40)
+        self.pause_button.setStyleSheet("font-size:18px;")
+        self.pause_button.clicked.connect(self.pause_auto_mode)
+        auto_layout.addWidget(self.pause_button)
+
         self.random_checkbox = QCheckBox(self.t("RANDOM MODE"))
         auto_layout.addWidget(self.random_checkbox)
 
-        default_values = {
+        self.default_values = {
             "default_dxdy": str(default_dxdy),
-            "TARGET_POINT": str(Target_Point),
-            "TARGET_DEGREE": str(Target_degree),
+            "Target_Point": str(Target_Point),
+            "Target_degree": str(Target_degree),
             "LOOP": str(auto_loop_count),
             "random_x_min": str(random_x_min),
             "random_x_max": str(random_x_max),
@@ -732,7 +741,7 @@ class MainWindow(QMainWindow):
         }
         form_layout = QFormLayout()
         self.auto_var_fields = {}
-        for key, val in default_values.items():
+        for key, val in self.default_values.items():
             label = QLabel(self.t(key))
             line_edit = QLineEdit(val)
             self.auto_var_fields[key] = line_edit
@@ -757,6 +766,11 @@ class MainWindow(QMainWindow):
 
         self.tabs.clear()
         self.tabs.hide()
+
+    def pause_auto_mode(self):
+        self.pause_requested = True
+        log("[AUTO] Pause requested by user → current loop will complete before stopping.", self)
+
 
     def start_auto_align(self):
         global auto_mode, rotation_done, align_done
@@ -788,8 +802,8 @@ class MainWindow(QMainWindow):
         try:
             global default_dxdy, Target_Point, Target_degree
             default_dxdy = eval(self.align_var_fields["default_dxdy"].text())
-            Target_Point = eval(self.align_var_fields["TARGET_POINT"].text())
-            Target_degree = float(self.align_var_fields["TARGET_DEGREE"].text())
+            Target_Point = eval(self.align_var_fields["Target_Point"].text())
+            Target_degree = float(self.align_var_fields["Target_degree"].text())
             self.update_target_point_label()
             self.label_target_degree.setText(self.t("Target Deg.") + f":{Target_degree}°")
             log("[CHANGED] Align 변수 적용됨", self)
@@ -838,8 +852,16 @@ class MainWindow(QMainWindow):
                 self.log_window.save_log_txt()
             except Exception as e:
                 QMessageBox.critical(self, "Save Error", f"Failed to save logs:\n{e}")
+            if self.zoom_window:
+                self.zoom_window.close() # 같이 끄기
+            if self.log_window:
+                self.log_window.close() # 같이 끄기
             event.accept()
         elif reply == QMessageBox.No:
+            if self.zoom_window:
+                self.zoom_window.close()
+            if self.log_window:
+                self.log_window.close()
             event.accept()
         else:
             event.ignore()
@@ -854,12 +876,25 @@ class MainWindow(QMainWindow):
 
     def update_model_menu(self):
         self.model_menu.clear()
-        models = list_available_model(r"C:\Users\Woody_msiPC\Desktop\wafer_align\Code")
+
+        models = [f for f in os.listdir(self.model_folder) if f.endswith(".pt")]
         for model_file in models:
             action = QAction(model_file, self)
-            action.triggered.connect(lambda checked, f=model_file: self.set_model_file(f))
+            action.triggered.connect(lambda checked, f=model_file: self.set_model_file(os.path.join(self.model_folder, f)))
             self.model_menu.addAction(action)
+
+        self.model_menu.addSeparator()
+        folder_action = QAction(self.t("Change Model Folder"), self) # folder 선택하기
+        folder_action.triggered.connect(self.change_model_folder)
+        self.model_menu.addAction(folder_action)
             
+    def change_model_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Model Folder")
+        if folder:
+            self.model_folder = folder
+            self.update_model_menu()
+            log(f"[MODEL] Changed Model Folder → {folder}", self)
+
     def set_model_file(self, file_path):
         global model
         try:
@@ -868,20 +903,29 @@ class MainWindow(QMainWindow):
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            model = YOLO(os.path.join("C:/Users/Woody_msiPC/Desktop/wafer_align/Code", file_path))
+            model = YOLO(resource_path(file_path))
+            self.current_model_path = file_path 
             log("[YOLO] Model loaded successfully", self)
         except Exception as e:
             log(f"[YOLO] Failed to load model: {e}", self)
             self.show_warning("Model Load Failed", str(e))
 
+
     async def serial_setup(self):
-        try:
-            self.ser_reader, self.ser_writer = await serial_asyncio.open_serial_connection(
-                url=SERIAL_PORT, baudrate=BAUDRATE)
-            self.serial_ready = True
-            log("[INIT] Serial ready", self)
-        except Exception as e:
-            log(f"[ERR] Serial setup failed: {e}", self)
+        global SERIAL_PORT
+        for i in range(1, 256):  # COM1~256까지 체크
+            port_name = f"COM{i}"
+            try:
+                self.ser_reader, self.ser_writer = await serial_asyncio.open_serial_connection(
+                    url=port_name, baudrate=BAUDRATE)
+                self.serial_ready = True
+                SERIAL_PORT = port_name
+                log(f"[INIT] Serial connected → {port_name}", self)
+                return
+            except Exception:
+                continue
+        log("[ERR] No available COM ports found", self)
+
 
     async def default_loop(self):
         global confirmed_center, home_mode, dx, dy, send_enabled
@@ -1089,13 +1133,17 @@ class MainWindow(QMainWindow):
 
     def reload_yolo_model(self):
         global model
-        log("[YOLO] reload model...", self)
-        del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        model = YOLO("redline.pt")
-        log("[YOLO]Successfully reload model", self)
+        try:
+            log("[YOLO] Reloading model...", self)
+            del model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            model = YOLO(resource_path(self.current_model_path)) 
+            log("[YOLO] Model reloaded successfully", self)
+        except Exception as e:
+            log(f"[YOLO] Reload failed: {e}", self)
+            self.show_warning("Reload Failed", str(e))
 
     async def auto_align_loop(self):
         global auto_mode, send_enabled, home_mode, force_send, confirmed_center
@@ -1107,7 +1155,7 @@ class MainWindow(QMainWindow):
         position_accuracy_list.clear()
         rotation_accuracy_list.clear()
 
-        while auto_mode and (auto_loop_count == 0 or count < auto_loop_count):
+        while (auto_mode or self.pause_requested) and (auto_loop_count == 0 or count < auto_loop_count):
             if RANDOM_MODE:
                 Target_Point = [
                     random.randint(random_x_min, random_x_max),
@@ -1115,16 +1163,14 @@ class MainWindow(QMainWindow):
                 ]
                 Target_degree = random.uniform(random_angle_min, random_angle_max)
                 self.update_target_point_label()
-                self.label_target_degree.setText(
-                    self.t("Target Deg.") + f": {Target_degree:.1f}°"
-                )
+                self.label_target_degree.setText(self.t("Target Deg.") + f": {Target_degree:.1f}°")
                 log(f"[AUTO] New random target → Point: {Target_Point}, Degree: {Target_degree:.1f}°", self)
                 await asyncio.sleep(0.2)
 
-            # 1) DEFAULT 단계
+            # 1) DEFAULT_1
             if confirmed_center:
                 home_mode = True
-                log(f"[AUTO] Loop {count+1}: DEFAULT", self)
+                log(f"[AUTO] Loop {count+1}: DEFAULT_1 started", self)
                 stable_count_default = 0
                 retry = 0
                 while retry < 200:
@@ -1138,11 +1184,10 @@ class MainWindow(QMainWindow):
                         if stable_count_default >= STABLE_REQUIRED:
                             break
                         await asyncio.sleep(0.05)
-                    await asyncio.sleep(3.0)
+                log(f"[AUTO] Loop {count+1}: DEFAULT_1 completed", self)
 
-
-            # 2) ALIGN 단계
-            log(f"[AUTO] Loop {count+1}: ALIGN", self)
+            # 2) ALIGN
+            log(f"[AUTO] Loop {count+1}: ALIGN started", self)
             align_done = False
             stable_count = 0
             if confirmed_center:
@@ -1150,7 +1195,6 @@ class MainWindow(QMainWindow):
                 dx0 = Target_Point[0] - confirmed_center[0]
                 dy0 = Target_Point[1] - confirmed_center[1]
                 self.initial_offset = (dx0, dy0)
-                start_point = confirmed_center
             else:
                 self.initial_offset = (FRAME_WIDTH, FRAME_HEIGHT)
                 start_point = (FRAME_WIDTH // 2, FRAME_HEIGHT)
@@ -1174,16 +1218,15 @@ class MainWindow(QMainWindow):
                 retry += 1
 
             await self.send_serial_command("STOP_ALIGN")
-            log(f"[AUTO] Loop {count+1}: ALIGN done", self)
+            log(f"[AUTO] Loop {count+1}: ALIGN completed", self)
 
-            # 3) ROTATION 단계
-            log(f"[AUTO] Loop {count+1}: ROTATION", self)
+            # 3) ROTATION
+            log(f"[AUTO] Loop {count+1}: ROTATION started", self)
             rotation_done = False
             self.rotation_active = True
             final_rot_acc = 0.0
             final_angle_err = 0.0
 
-            # 회전 루프 준비: 회전 시작 각도/총 이동 각도 기록
             self.rotation_start = angle
             self.rotation_total = (Target_degree - self.rotation_start + 360) % 360
             if self.rotation_total == 0:
@@ -1200,11 +1243,12 @@ class MainWindow(QMainWindow):
                 for b in results[0].boxes.data:
                     x1, y1, x2, y2, *_ = b.tolist()
                     lbl = results[0].names[int(b[5])]
-                    cx, cy = int((x1 + x2)/2), int((y1 + y2)/2)
+                    cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
                     if lbl in ["P100", "P111"]:
                         wafer_c = (cx, cy)
                     elif lbl == "F1":
                         f1_c = (cx, cy)
+
                 if not f1_c or not wafer_c:
                     continue
 
@@ -1231,39 +1275,31 @@ class MainWindow(QMainWindow):
                     cmd = f"0,0,0,0,{diR},{stR}"
                     await self.send_serial_command(cmd)
 
+            # 4) 결과 저장
             final_pos_acc = position_accuracy_list[-1] if position_accuracy_list else 0.0
             final_dx = Target_Point[0] - confirmed_center[0] if confirmed_center else 0
             final_dy = Target_Point[1] - confirmed_center[1] if confirmed_center else 0
-
             counts = [
                 len(detection_stats["P100"]["F1"]), len(detection_stats["P100"]["F2"]),
                 len(detection_stats["P100"]["P100"]), len(detection_stats["P100"]["P111"]),
                 len(detection_stats["P111"]["F1"]), len(detection_stats["P111"]["F2"]),
                 len(detection_stats["P111"]["P100"]), len(detection_stats["P111"]["P111"])
             ]
-
             self.loop_results.append([
-                count + 1,
-                final_pos_acc,
-                final_dx,
-                final_dy,
-                Target_Point[0],
-                Target_Point[1],
-                start_point[0],
-                start_point[1],
-                final_rot_acc,
-                final_angle_err,
+                count + 1, final_pos_acc, final_dx, final_dy,
+                Target_Point[0], Target_Point[1],
+                start_point[0], start_point[1],
+                final_rot_acc, final_angle_err,
                 *counts
             ])
-            log(f"[AUTO] Loop {count+1} result → "
-                f"PosAcc={final_pos_acc:.2f}%, ΔX={final_dx}, ΔY={final_dy}, "
-                f"RotAcc={final_rot_acc:.2f}%, RotErr={final_angle_err:.2f}°", self)
+            log(f"[AUTO] Loop {count+1} result → PosAcc={final_pos_acc:.2f}%, "
+                f"ΔX={final_dx}, ΔY={final_dy}, RotAcc={final_rot_acc:.2f}%, "
+                f"RotErr={final_angle_err:.2f}°", self)
 
-            await asyncio.sleep(1.0)
-
-            # 4) FINAL DEFAULT
+            # 5) DEFAULT_2
             if confirmed_center:
                 home_mode = True
+                log(f"[AUTO] Loop {count+1}: DEFAULT_2 started", self)
                 stable_count_default = 0
                 retry = 0
                 while retry < 200:
@@ -1277,18 +1313,24 @@ class MainWindow(QMainWindow):
                         if stable_count_default >= STABLE_REQUIRED:
                             break
                         await asyncio.sleep(0.05)
-                        position_accuracy_list.clear()
-                        rotation_accuracy_list.clear()
-                        self.align_text_label.setText(f"Position Accuracy\n0.00%")
-                        self.rotation_text_label.setText(f"Rotation Accuracy\n0.00%")
-                    await asyncio.sleep(3.0) # 웨이퍼 교체 시간
+                log(f"[AUTO] Loop {count+1}: DEFAULT_2 completed", self)
+                await asyncio.sleep(3.0)
+
             count += 1
 
+            # PAUSE: 하던 루프(DEFAULT_2)까지 하고 종료
+            if self.pause_requested:
+                log("[AUTO] PAUSE activated → loop complete, stopping AUTO", self)
+                break
+
         auto_mode = False
+        self.pause_requested = False
         send_enabled = False
         force_send = False
-        log("[AUTO] AUTO_PAUSED", self)
-
+        self.rotation_active = False
+        self.align_text_label.setText("Position Accuracy\n0.00%")
+        self.rotation_text_label.setText("Rotation Accuracy\n0.00%")
+        log("[AUTO] AUTO fully stopped, system ready", self)
 
     def toggle_target_mode(self):
         global setting_target_mode, align_done, rotation_done, Target_Point
@@ -1382,12 +1424,25 @@ class MainWindow(QMainWindow):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         display = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
+        range_xy = f"Range X: {random_x_min}, Y: {random_y_min} ~ X: {random_x_max}, Y: {random_y_max}"
+        cv2.putText(display, range_xy, (10, 30), FONT, 0.7, (0, 0, 0), 4)
+        cv2.putText(display, "Do not exceed this range", (10, 60), FONT, 0.7, (0, 0, 0), 4)
+        cv2.putText(display, range_xy, (10, 30), FONT, 0.7, (255, 255, 255), 1)
+        cv2.putText(display, "Do not exceed this range", (10, 60), FONT, 0.7, (0, 0, 255), 1)
+
         if not self.tabs.isVisible():
             rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb.shape
             img = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
             self.image_label.setPixmap(QPixmap.fromImage(img))
             return
+        
+        if self.show_range: # xy range 박스 그리기
+            top_left = (random_x_min, random_y_min)
+            bottom_right = (random_x_max, random_y_max)
+            cv2.rectangle(display, top_left, bottom_right, (0, 0, 255), 2)
+            cv2.putText(display, "XY Range", (random_x_min, random_y_min - 10),
+                        FONT, 0.6, (0, 0, 255), 2) # 빨간색
 
         results = model(frame, conf=0.6)
 
@@ -1401,7 +1456,7 @@ class MainWindow(QMainWindow):
 
         if has_f1 and has_f2: wafer_type = "P100"
         elif has_f1:          wafer_type = "P111"
-        self.label_wafer_type.setText(self.t("Wafer Type\n") + str(wafer_type or "  "))
+        self.label_wafer_type.setText(self.t("Wafer Type") + "\n" + str(wafer_type or "  "))
 
         draw_yolo_boxes(display, results, self, wafer_type)
 
@@ -1552,7 +1607,7 @@ class MainWindow(QMainWindow):
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Information)
         msg.setWindowTitle("도움말")
-        msg.setText("Wafer Aligner\n\nALIGN: 정렬을 시작합니다\nMANUAL: 마우스로 타겟 설정\nHOMING: 초기 위치로 복귀\nANGLE: 각도 설정 \nROTATION: 각도 정렬 \nAUTO: 자동모드 ")
+        msg.setText("Wafer Aligner\n\nALIGN: 정렬을 시작합니다\nMANUAL: 마우스로 타겟 설정\nHOMING: 초기 위치로 복귀\nANGLE: 각도 설정 \nROTATION: 각도 정렬 \nAUTO:     ")
         msg.exec_()
 
     def show_variable_tab(self):
@@ -1649,7 +1704,7 @@ class LogWindow(QWidget):
 
     def save_log_txt(self):
         try:
-            target_dir = r"C:\Users\Mai\Desktop\wafer_project\log and summary"
+            target_dir = resource_path("log and summary")
             os.makedirs(target_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -1712,6 +1767,11 @@ class VariableTab(QWidget):
         self.default_values = {
             "default_dxdy": "(740, 340)", 
             "Target_Point": "[640, 360]",
+            "Target_degree": "0",
+            "random_x_min": "230",
+            "random_x_max": "980",
+            "random_y_min": "160",
+            "random_y_max": "580",
             "PIXEL_TO_STEP": "{'x': 33.0, 'y': 45.65}", 
             "TOLERANCE_PX": "1",
             "TOLERANCE_R": "1",
@@ -1749,9 +1809,9 @@ class VariableTab(QWidget):
 
     def apply_changes(self):
         try:
-            changes = [] 
-
+            changes = []
             def update_variable(name, parse_func):
+                global random_x_min, random_x_max, random_y_min, random_y_max
                 old_val = str(globals()[name])
                 new_val = parse_func(self.fields[name].text())
                 if str(new_val) != old_val:
@@ -1759,17 +1819,24 @@ class VariableTab(QWidget):
                     changes.append(f"{name} changed from {old_val} to {new_val}.")
                     if name == "Target_Point":
                         self.main_window.update_target_point_label()
+
             update_variable("default_dxdy", eval)
-            update_variable("Target_Point", eval)
+            update_variable("Target_Point", eval)            
+            update_variable("random_x_min", eval)
+            update_variable("random_x_max", eval)
+            update_variable("random_y_min", eval)
+            update_variable("random_y_max", eval)
+            update_variable("Target_degree", eval)
             update_variable("PIXEL_TO_STEP", eval)
             update_variable("TOLERANCE_PX", int)
-            update_variable("TOLERANCE_R", int,)
+            update_variable("TOLERANCE_R", int)
             update_variable("MAX_STEPS", int)
 
             for msg in changes:
                 log(f"[CHANGED] {msg}", self.main_window)
+
         except Exception as e:
-            print(f"[ERROR] Failed to apply changes: {e}")
+            log(f"[ERROR] Failed to apply changes: {e}", self.main_window)
 
     def reset_fields(self):
         for key, default_val in self.default_values.items():
@@ -1836,9 +1903,7 @@ class ZoomWindow(QWidget):
 
 def main():
     app = QApplication(sys.argv)
-    splash_pix = QPixmap("C:/Users/Mai/Desktop/wafer_project/splash.png").scaled(
-        1400, 576, Qt.KeepAspectRatio, Qt.SmoothTransformation
-    )
+    splash_pix = QPixmap(resource_path("splash.png")).scaled(1400, 576, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     splash = QSplashScreen(splash_pix)
     splash.show()
     app.processEvents()
