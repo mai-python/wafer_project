@@ -13,7 +13,7 @@
 #define EN_R 10
 
 #define STEP_DELAY 800   // 마이크로초 단위
-#define R_STEP_DELAY 8000 // rotation
+#define R_STEP_DELAY 5000 // rotation
 
 bool ready_for_command = false;
 String input = "";
