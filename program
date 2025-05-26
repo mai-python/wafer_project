@@ -1,4 +1,5 @@
 import sys, os, gc, time, asyncio, csv, random, pyautogui
+import serial  # 시리얼 포트 탐색을 위한 추가
 from datetime import datetime
 import cv2, torch, numpy as np, serial_asyncio
 from ultralytics import YOLO
@@ -17,16 +18,17 @@ def resource_path(relative_path): # exe로 변환시 필요한 주소지정함�
         base_path = os.path.abspath(".") 
     return os.path.join(base_path, relative_path)
 
-model = YOLO(resource_path(os.path.join("models", "best.pt")))
+model = YOLO(resource_path(os.path.join("Desktop", "wafer_align", "Code", "models", "best.pt")))
+
 FRAME_WIDTH, FRAME_HEIGHT = 1280, 720 
 Target_Point = [FRAME_WIDTH // 2, FRAME_HEIGHT // 2]
-default_dxdy = (740, 340)
-TOLERANCE_PX, TOLERANCE_R = 1, 1
-PIXEL_TO_STEP = {'x': 33.0, 'y': 45.65}
+default_dxdy = (600, 350)
+TOLERANCE_PX, TOLERANCE_R = 1, 2
+PIXEL_TO_STEP = {'x': 20.0, 'y': 20.0}
 MAX_STEPS = 32000
-CAMERA_INDEX = 0
+CAMERA_INDEX = 4
 BAUDRATE = 9600
-SERIAL_PORT = "COM5" 
+SERIAL_PORT = "COM10" 
 STABLE_REQUIRED = 3
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE, FONT_THICKNESS = 0.6, 2
@@ -60,7 +62,7 @@ rotation_done = False
 position_accuracy_list = []
 rotation_accuracy_list = []
 RANDOM_MODE = False
-wafer_type = None 
+wafer_type = None
 
 def camera_list(max_index=10): # 카메라 10번까지 확인, ERROR:0@11.250 무시
     camera_list = []
@@ -84,20 +86,18 @@ def calculate_rotation_accuracy(angle_error_val, max_error=30):
     else:
         return round((1 - (angle_error_val / max_error)) * 100, 2)
 
-def calculate_accuracy_px(target_point, center_point, initial_offset=None):
-    dx = target_point[0] - center_point[0]
-    dy = target_point[1] - center_point[1]
+def calculate_accuracy_px(target_point, start_point, initial_offset=None):
+    dx = target_point[0] - confirmed_center[0]
+    dy = target_point[1] - confirmed_center[1]
     current_distance = (dx ** 2 + dy ** 2) ** 0.5
 
-    if initial_offset is not None:
-        start_distance = (initial_offset[0] ** 2 + initial_offset[1] ** 2) ** 0.5
-    else:
-        start_distance = ((target_point[0] - FRAME_WIDTH // 2) ** 2 +
-                          (target_point[1] - FRAME_HEIGHT // 2) ** 2) ** 0.5
+    start_distance = ((target_point[0] - start_point[0]) ** 2 +
+                      (target_point[1] - start_point[1]) ** 2) ** 0.5
 
     if start_distance == 0:
-        return 100.0
-    ratio = (start_distance - current_distance) / start_distance
+        return 00000
+
+    ratio = 1 - (current_distance / start_distance)
     ratio = max(0, min(1, ratio))
     return round(ratio * 100, 2)
 
@@ -157,6 +157,7 @@ def calculate_steps(from_point, to_point):
     command = f"{dix},{diy},{dx_steps},{dy_steps},0,0"
     return dx, dy, dx_steps, dy_steps, command
 
+
 class MainWindow(QMainWindow):
     def __init__(self, loop): 
         super().__init__() 
@@ -169,7 +170,7 @@ class MainWindow(QMainWindow):
         self.pause_requested = False  # align 루프 stop변수 , 2번째 default까지만 수행하고 정지
 
         QShortcut(QKeySequence("Ctrl+G"), self).activated.connect(self.launch_game)
-        self.model_folder = resource_path("models")
+        self.model_folder = resource_path(os.path.join("Desktop", "wafer_align", "Code", "models"))
         self.current_model_path = os.path.join(self.model_folder, "best.pt")
         self.recording = False
         self.video_writer = None
@@ -327,6 +328,11 @@ class MainWindow(QMainWindow):
         }
         self.loop_results = []  # [ (loop_idx, pos_acc, rot_acc), ... ]
 
+        self.total_frames = 0
+        self.frames_with_detection = 0
+
+
+
         self.file_menu = menubar.addMenu(self.t("File"))
         self.capture_action = QAction(self.t("Capture"), self)
         self.save_all_action = QAction("Save", self, triggered=self.save_all)
@@ -366,6 +372,9 @@ class MainWindow(QMainWindow):
         self.settings_menu = menubar.addMenu(self.t("Settings"))
         self.camera_menu = QMenu(self.t("Camera Select"), self)
         self.settings_menu.addMenu(self.camera_menu)
+        self.serial_menu = QMenu("Serial Port", self)
+        self.settings_menu.addMenu(self.serial_menu)
+        self.update_serial_menu()
         self.update_camera_menu()
         self.model_menu = QMenu(self.t("Model Select"), self)
         self.settings_menu.addMenu(self.model_menu)
@@ -488,6 +497,36 @@ class MainWindow(QMainWindow):
         asyncio.create_task(self.serial_setup())
         self.state = "Standby"
 
+    def update_serial_menu(self):
+        self.serial_menu.clear()
+        ports = [f"COM{i}" for i in range(1, 51)]  # COM1~COM50까지 시도
+        available_ports = []
+
+        for port in ports:
+            try:
+                s = serial.Serial(port)
+                s.close()
+                available_ports.append(port)
+            except:
+                continue
+
+        # SERIAL_PORT을 최우선으로 정렬
+        available_ports.sort(key=lambda p: (p != SERIAL_PORT, int(p[3:])))
+
+        for port in available_ports:
+            action = QAction(port, self)
+            action.triggered.connect(lambda checked, p=port: self.set_serial_port(p))
+            self.serial_menu.addAction(action)
+
+
+    def set_serial_port(self, port_name):
+        global SERIAL_PORT
+        SERIAL_PORT = port_name
+        log(f"[SERIAL] Selected port: {SERIAL_PORT}", self)
+        asyncio.create_task(self.serial_setup())
+
+
+
     def toggle_show_range(self):
         self.show_range = not self.show_range
 
@@ -515,8 +554,8 @@ class MainWindow(QMainWindow):
             writer.writerow([
                 "Loop", "Position Acc (%)", "ΔX (px)", "ΔY (px)", "Target_Point[0]", "Target_Point[1]", "start_point[0]", "start_point[1]",
                 "Rotation Acc (%)", "Angle Err (°)",
-                "P100_F1_Count", "P100_F2_Count", "P100_P100_Count", "P100_P111_Count",
-                "P111_F1_Count", "P111_F2_Count", "P111_P100_Count", "P111_P111_Count"
+                "P111_Count", "P100_Count", "F1_Count", "F2_Count",
+                "Total Frames", "Detected Frames"
             ])
             for row in self.loop_results:
                 writer.writerow(row)
@@ -571,10 +610,10 @@ class MainWindow(QMainWindow):
             self.manual_mode_action.setText(self.t("Manual"))
             self.idle_mode_action.setText(self.t("Idle"))
             self.tool_menu.setTitle(self.t("Tool"))
+            self.log_action.setText(self.t("Log"))
             self.reload_action.setText(self.t("Reload"))
             self.record_action.setText(self.t("Recording"))
             self.zoom_action.setText(self.t("Zoom"))
-            self.log_action.setText(self.t("Log"))
             self.settings_menu.setTitle(self.t("Settings"))
             self.camera_menu.setTitle(self.t("Camera Select"))
             self.show_range_action.setText(self.t("Show Range"))
@@ -865,14 +904,6 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
-    
-    def update_camera_menu(self):
-        self.camera_menu.clear()
-        cameras = camera_list(10)
-        for index in cameras:
-            action = QAction(f"Camera {index}", self)
-            action.triggered.connect(lambda checked, i=index: self.set_camera_index(i))
-            self.camera_menu.addAction(action)
 
     def update_model_menu(self):
         self.model_menu.clear()
@@ -913,18 +944,15 @@ class MainWindow(QMainWindow):
 
     async def serial_setup(self):
         global SERIAL_PORT
-        for i in range(1, 256):  # COM1~256까지 체크
-            port_name = f"COM{i}"
-            try:
-                self.ser_reader, self.ser_writer = await serial_asyncio.open_serial_connection(
-                    url=port_name, baudrate=BAUDRATE)
-                self.serial_ready = True
-                SERIAL_PORT = port_name
-                log(f"[INIT] Serial connected → {port_name}", self)
-                return
-            except Exception:
-                continue
-        log("[ERR] No available COM ports found", self)
+        try:
+            self.ser_reader, self.ser_writer = await serial_asyncio.open_serial_connection(
+                url=SERIAL_PORT, baudrate=BAUDRATE)
+            self.serial_ready = True
+            log(f"[INIT] Serial connected → {SERIAL_PORT}", self)
+        except Exception as e:
+            self.serial_ready = False
+            log(f"[ERR] Failed to open {SERIAL_PORT}: {e}", self)
+
 
 
     async def default_loop(self):
@@ -1205,7 +1233,7 @@ class MainWindow(QMainWindow):
                 await asyncio.sleep(0.05)
                 if confirmed_center:
                     dx, dy, dx_s, dy_s, cmd = calculate_steps(confirmed_center, Target_Point)
-                    pos_acc = calculate_accuracy_px(Target_Point, confirmed_center, self.initial_offset)
+                    pos_acc = calculate_accuracy_px(Target_Point, start_point, self.initial_offset)
                     position_accuracy_list.append(pos_acc)
                     self.align_text_label.setText(f"Position Accuracy\n{pos_acc:.2f}%")
                     if abs(dx) > TOLERANCE_PX or abs(dy) > TOLERANCE_PX:
@@ -1279,18 +1307,20 @@ class MainWindow(QMainWindow):
             final_pos_acc = position_accuracy_list[-1] if position_accuracy_list else 0.0
             final_dx = Target_Point[0] - confirmed_center[0] if confirmed_center else 0
             final_dy = Target_Point[1] - confirmed_center[1] if confirmed_center else 0
-            counts = [
-                len(detection_stats["P100"]["F1"]), len(detection_stats["P100"]["F2"]),
-                len(detection_stats["P100"]["P100"]), len(detection_stats["P100"]["P111"]),
-                len(detection_stats["P111"]["F1"]), len(detection_stats["P111"]["F2"]),
-                len(detection_stats["P111"]["P100"]), len(detection_stats["P111"]["P111"])
-            ]
+
+            p111_count = len(detection_stats["P111"]["P111"]) + len(detection_stats["P100"]["P111"])
+            p100_count = len(detection_stats["P100"]["P100"]) + len(detection_stats["P111"]["P100"])
+            f1_count   = len(detection_stats["P100"]["F1"])    + len(detection_stats["P111"]["F1"])
+            f2_count   = len(detection_stats["P100"]["F2"])    + len(detection_stats["P111"]["F2"])
+            counts = [p111_count, p100_count, f1_count, f2_count]
+
             self.loop_results.append([
                 count + 1, final_pos_acc, final_dx, final_dy,
                 Target_Point[0], Target_Point[1],
                 start_point[0], start_point[1],
                 final_rot_acc, final_angle_err,
-                *counts
+                *counts,
+                self.total_frames, self.frames_with_detection
             ])
             log(f"[AUTO] Loop {count+1} result → PosAcc={final_pos_acc:.2f}%, "
                 f"ΔX={final_dx}, ΔY={final_dy}, RotAcc={final_rot_acc:.2f}%, "
@@ -1328,6 +1358,7 @@ class MainWindow(QMainWindow):
         send_enabled = False
         force_send = False
         self.rotation_active = False
+        
         self.align_text_label.setText("Position Accuracy\n0.00%")
         self.rotation_text_label.setText("Rotation Accuracy\n0.00%")
         log("[AUTO] AUTO fully stopped, system ready", self)
@@ -1545,10 +1576,11 @@ class MainWindow(QMainWindow):
             self.rotation_completed_shown = False
 
         if confirmed_center:
+            start_point = confirmed_center
             dx, dy, dx_s, dy_s, cmd = calculate_steps(confirmed_center, Target_Point)
             self.label_coords.setText(self.t("Position_Err") + f":\n({dx}, {dy})")
             if send_enabled:
-                acc = calculate_accuracy_px(Target_Point, confirmed_center, self.initial_offset)
+                acc = calculate_accuracy_px(Target_Point, start_point, self.initial_offset)
             if abs(dx)<=TOLERANCE_PX and abs(dy)<=TOLERANCE_PX:
                 stable_count +=1
                 if stable_count>=STABLE_REQUIRED:
@@ -1575,6 +1607,11 @@ class MainWindow(QMainWindow):
         h, w, ch = rgb.shape
         img = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
         self.image_label.setPixmap(QPixmap.fromImage(img))
+
+        self.total_frames += 1
+        if results and results[0].boxes and len(results[0].boxes) > 0:
+            self.frames_with_detection += 1
+
 
         # Zoom윈도우 지원
         half = 50
@@ -1903,7 +1940,7 @@ class ZoomWindow(QWidget):
 
 def main():
     app = QApplication(sys.argv)
-    splash_pix = QPixmap(resource_path("splash.png")).scaled(1400, 576, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    splash_pix = QPixmap(resource_path(os.path.join("Desktop", "wafer_align", "Code", "assets", "splash.png"))).scaled(1400, 576, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     splash = QSplashScreen(splash_pix)
     splash.show()
     app.processEvents()
