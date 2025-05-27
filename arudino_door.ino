@@ -70,18 +70,25 @@ void processCommand(String cmd) {
   }
 
   // 서보모터 명령 처리
-  if (cmd == "SERVO_1") {
-    doorservo.write(180);  // 문 열기
-    Serial.println("[Arduino] Servo opened");
-    Serial.println("DONE");
-    return;
+if (cmd == "SERVO_1") {
+  for (int angle = 0; angle <= 180; angle++) {
+    doorservo.write(angle);
+    delay(10);
   }
-  if (cmd == "SERVO_0") {
-    doorservo.write(0);   // 문 닫기
-    Serial.println("[Arduino] Servo closed");
-    Serial.println("DONE");
-    return;
+  Serial.println("[Arduino] Servo opened slowly");
+  Serial.println("DONE");
+  return;
+}
+
+if (cmd == "SERVO_0") {
+  for (int angle = 180; angle >= 0; angle--) {
+    doorservo.write(angle);
+    delay(10);
   }
+  Serial.println("[Arduino] Servo closed slowly");
+  Serial.println("DONE");
+  return;
+}
 
   int dix = -1, diy = -1, dirR = -1;
   long stx = 0, sty = 0, stR = 0;
