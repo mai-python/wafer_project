@@ -13,8 +13,8 @@ Servo doorservo;
 #define STEP_R 9
 #define EN_R 10
 
-#define STEP_DELAY 800     // µs for X/Y movement
-#define R_STEP_DELAY 5000  // µs for rotation
+#define STEP_DELAY 800     
+#define R_STEP_DELAY 5000 
 
 bool ready_for_command = false;
 String input = "";
@@ -23,8 +23,6 @@ void setup() {
   pinMode(DIR_X, OUTPUT);  pinMode(STEP_X, OUTPUT);  pinMode(EN_X, OUTPUT);
   pinMode(DIR_Y, OUTPUT);  pinMode(STEP_Y, OUTPUT);  pinMode(EN_Y, OUTPUT);
   pinMode(DIR_R, OUTPUT);  pinMode(STEP_R, OUTPUT);  pinMode(EN_R, OUTPUT);
-
-  doorservo.attach(11);
 
   digitalWrite(EN_X, HIGH);
   digitalWrite(EN_Y, HIGH);
@@ -70,25 +68,29 @@ void processCommand(String cmd) {
   }
 
   // 서보모터 명령 처리
-if (cmd == "SERVO_1") {
-  for (int angle = 0; angle <= 180; angle++) {
-    doorservo.write(angle);
-    delay(10);
+  if (cmd == "SERVO_1") {
+    doorservo.attach(11);
+    for (int angle = 0; angle <= 90; angle++) {
+      doorservo.write(angle);
+      delay(3);
+    }
+    doorservo.detach();
+    Serial.println("[Arduino] Servo opened slowly");
+    Serial.println("DONE");
+    return;
   }
-  Serial.println("[Arduino] Servo opened slowly");
-  Serial.println("DONE");
-  return;
-}
 
-if (cmd == "SERVO_0") {
-  for (int angle = 180; angle >= 0; angle--) {
-    doorservo.write(angle);
-    delay(10);
+  if (cmd == "SERVO_0") {
+    doorservo.attach(11);
+    for (int angle = 90; angle >= 0; angle--) {
+      doorservo.write(angle);
+      delay(3);
+    }
+    doorservo.detach();
+    Serial.println("[Arduino] Servo closed slowly");
+    Serial.println("DONE");
+    return;
   }
-  Serial.println("[Arduino] Servo closed slowly");
-  Serial.println("DONE");
-  return;
-}
 
   int dix = -1, diy = -1, dirR = -1;
   long stx = 0, sty = 0, stR = 0;
